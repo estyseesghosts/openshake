@@ -406,10 +406,12 @@ export function reduceSessionRows(
     message.content.forEach((part) => {
       const partID = part.type === "tool" ? part.id : `${part.type}:${ordinals[part.type]++}`
       if ((part.type === "text" || part.type === "reasoning") && !part.text.trim()) return
+      const projection: AppendPart =
+        part.type === "tool" ? { type: "tool", name: part.name, error: part.state.status === "error" } : part
       rows.push({
         entry: { type: "part", ref: { messageID: message.id, partID } },
-        part,
-        path: partPath(part, verbosity),
+        part: projection,
+        path: partPath(projection, verbosity),
       })
     })
     const terminal = (message.finish && !["tool-calls", "unknown"].includes(message.finish)) || message.error
