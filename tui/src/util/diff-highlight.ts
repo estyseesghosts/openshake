@@ -1,3 +1,5 @@
+import type { SimpleHighlight } from "@opentui/core"
+
 export type HighlightThresholds = {
   /** Beyond this many bytes, Tree-sitter highlighting of a whole virtualized file is deferred. */
   maxBytes: number
@@ -20,18 +22,49 @@ export function prefixOffsets(contents: readonly string[]): number[] {
   return offsets
 }
 
-/** A whole-file parse is only worth it while the file is still reasonably sized. */
+/**
+ * A whole-file parse is only worth it while the file is still reasonably sized. `contents` is the list of chunk
+ * sources, so the line count must be passed separately: `contents.length` counts chunks, not lines.
+ */
 export function highlightBudgetExceeded(
   contents: readonly string[],
+  lineCount = contents.length,
   thresholds: HighlightThresholds = defaultHighlightThresholds,
 ) {
-  if (contents.length > thresholds.maxLines) return true
-  let bytes = contents.length
+  if (lineCount > thresholds.maxLines) return true
+  let bytes = lineCount
   for (const content of contents) {
     bytes += content.length
     if (bytes > thresholds.maxBytes) return true
   }
   return false
+}
+
+/**
+ * Splits whole-file highlight ranges into per-chunk local ranges in a single pass. A range crossing a chunk
+ * boundary is clipped into both chunks, so no chunk is ever parsed on its own with invented syntax state.
+ */
+export function partitionHighlights(
+  highlights: readonly SimpleHighlight[],
+  contents: readonly string[],
+): SimpleHighlight[][] {
+  const slices: SimpleHighlight[][] = contents.map(() => [])
+  const offsets = prefixOffsets(contents)
+  for (const highlight of highlights) {
+    for (let index = 0; index < contents.length; index++) {
+      const start = offsets[index]!
+      const end = start + (contents[index]?.length ?? 0)
+      if (highlight[0] < end && highlight[1] > start) {
+        slices[index]!.push([
+          Math.max(highlight[0], start) - start,
+          Math.min(highlight[1], end) - start,
+          highlight[2],
+          highlight[3],
+        ])
+      }
+    }
+  }
+  return slices
 }
 
 /**

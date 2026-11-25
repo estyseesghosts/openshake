@@ -15,8 +15,10 @@ function key(sessionID: string, messageID: string, partID: string, kind: StreamK
 
 /**
  * Accumulates high-frequency streaming deltas per part and publishes them once per
- * flush window. Lifecycle events call `flush()` synchronously, so the final payload
- * always wins. Progress metadata is last-write-wins within the same window.
+ * flush window. Terminal lifecycle events flush only the part, message or session
+ * they belong to, so a busy session's lifecycle traffic never publishes another
+ * session's buffered deltas. A single insertion-ordered pending map means scoped
+ * flushes cannot reorder delta and completion events.
  */
 export class StreamCoalescer {
   private readonly pending = new Map<string, StreamEntry>()
@@ -57,13 +59,43 @@ export class StreamCoalescer {
     this.add({ sessionID, messageID, partID: toolID, kind: "tool-progress", metadata })
   }
 
-  /** Publish everything accumulated so far. Safe to call repeatedly. */
+  /** Publish one part's buffered entries before its terminal event. */
+  flushPart(sessionID: string, messageID: string, partID: string) {
+    this.flushWhere(
+      (entry) =>
+        entry.sessionID === sessionID && entry.messageID === messageID && entry.partID === partID,
+    )
+  }
+
+  /** Publish every buffered part of one message at a step boundary. */
+  flushMessage(sessionID: string, messageID: string) {
+    this.flushWhere((entry) => entry.sessionID === sessionID && entry.messageID === messageID)
+  }
+
+  /** Publish one session's buffered content at an execution boundary. */
+  flushSession(sessionID: string) {
+    this.flushWhere((entry) => entry.sessionID === sessionID)
+  }
+
+  /** Publish everything accumulated so far. Reserved for true global barriers. */
   flush() {
-    if (this.pending.size === 0) return
-    const entries = [...this.pending.values()]
-    this.pending.clear()
+    this.flushWhere(() => true)
+  }
+
+  private flushWhere(match: (entry: StreamEntry) => boolean) {
     this.scheduled = false
+    const entries: StreamEntry[] = []
+    for (const [id, entry] of this.pending) {
+      if (!match(entry)) continue
+      entries.push(entry)
+      this.pending.delete(id)
+    }
     entries.forEach((entry) => this.apply(entry))
+  }
+
+  /** Counters for tests and instrumentation; never used on a render path. */
+  pendingCount() {
+    return this.pending.size
   }
 
   /** Dispose must never publish stale buffered content into a new session generation. */

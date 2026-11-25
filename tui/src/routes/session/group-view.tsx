@@ -267,13 +267,23 @@ function MediumGroup(props: GroupProps) {
       return part?.type === "tool" ? [part] : []
     }),
   )
+  // Past-tense headers describe finished work only. A still-running child is shown
+  // by `running()` below, so it must not inflate the summary before it completes.
+  const finished = createMemo(() => parts().filter((part) => part.time.completed !== undefined))
+  // Keep the first visible part as a stable anchor: a singleton edit's diff and the
+  // collapsed header it becomes register under the same part identity, so a saved
+  // scroll position survives the large height reduction.
+  const anchorEntry = createMemo(() => {
+    const entry = entries().find((item) => item.type === "part" && !isPending(item, props.pending))
+    return entry?.type === "part" ? entry : undefined
+  })
   const edits = () => props.node.kind === "medium-edits"
   const actions = createMemo(() =>
-    parts().map((part) => ({ name: part.name, ...(edits() ? { files: mediumEditFileCount(part) } : {}) })),
+    finished().map((part) => ({ name: part.name, ...(edits() ? { files: mediumEditFileCount(part) } : {}) })),
   )
   const counts = createMemo(() =>
     edits()
-      ? parts().reduce(
+      ? finished().reduce(
           (total, part) => {
             const next = mediumEditCounts(part)
             return { additions: total.additions + next.additions, deletions: total.deletions + next.deletions }
@@ -300,41 +310,51 @@ function MediumGroup(props: GroupProps) {
     return newest ? mediumLiveLine(newest) : ""
   })
 
-  if (props.node.size === 1) {
-    return (
-      <>
+  // Transparency depends on visible tools, not raw node size: a blocked singleton
+  // leaves nothing to summarize, and one visible tool beside blocked ones keeps its renderer.
+  // The decision is reactive so a live second call can collapse a singleton in place.
+  return (
+    <Show
+      when={parts().length <= 1}
+      fallback={
+        <GroupAnchor groupID={disclosure.id()} active={Boolean(disclosure.id())}>
+          <Show when={anchorEntry()}>
+            {(entry) => (
+              <EntryAnchor entry={entry()}>
+                <InlineToolRow
+                  icon={disclosure.expanded() ? "−" : "+"}
+                  color={hover() ? theme.text.base : theme.text.muted}
+                  complete={completed()}
+                  pending={label()}
+                  spinner={!completed()}
+                  onMouseOver={() => setHover(true)}
+                  onMouseOut={() => setHover(false)}
+                  onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
+                >
+                  {label()}
+                </InlineToolRow>
+              </EntryAnchor>
+            )}
+          </Show>
+          <Show when={running()}>
+            <box marginLeft={3}>
+              <text fg={theme.text.muted}>└ {running()}</text>
+            </box>
+          </Show>
+          <Show when={disclosure.expanded()}>
+            <box flexDirection="column" gap={1} marginTop={1}>
+              <Children {...props} nodes={props.node.children} mode="tool" />
+            </box>
+          </Show>
+          <PendingEntries {...props} entries={entries()} />
+        </GroupAnchor>
+      }
+    >
+      <GroupAnchor groupID={disclosure.id()} active={Boolean(disclosure.id())}>
         <Children {...props} nodes={props.node.children} mode="normal" />
         <PendingEntries {...props} entries={entries()} />
-      </>
-    )
-  }
-
-  return (
-    <GroupAnchor groupID={disclosure.id()} active={running() !== ""}>
-      <InlineToolRow
-        icon={disclosure.expanded() ? "−" : "+"}
-        color={hover() ? theme.text.base : theme.text.muted}
-        complete={completed()}
-        pending={label()}
-        spinner={!completed()}
-        onMouseOver={() => setHover(true)}
-        onMouseOut={() => setHover(false)}
-        onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
-      >
-        {label()}
-      </InlineToolRow>
-      <Show when={running()}>
-        <box marginLeft={3}>
-          <text fg={theme.text.muted}>└ {running()}</text>
-        </box>
-      </Show>
-      <Show when={disclosure.expanded()}>
-        <box flexDirection="column" gap={1} marginTop={1}>
-          <Children {...props} nodes={props.node.children} mode="tool" />
-        </box>
-      </Show>
-      <PendingEntries {...props} entries={entries()} />
-    </GroupAnchor>
+      </GroupAnchor>
+    </Show>
   )
 }
 

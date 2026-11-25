@@ -204,16 +204,16 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       session: data.session,
       current: () =>
         route.data.type === "session" && route.data.sessionID !== "dummy" ? route.data.sessionID : undefined,
+      // One explicit heavy-transcript policy: the visible session plus two warm
+      // roots. `limit: 0` prevents retention from silently adding another three.
+      // Attention tabs keep their permission/form badge metadata in the data layer
+      // without pinning megabytes of message history.
       keep: () => {
         if (!enabled()) return []
         const tabs = state().tabs.map((tab) => tab.sessionID)
-        const warm = new Set(warmSessionIDs(current(), tabs, history.entries, 2))
-        tabs.forEach((id) => {
-          if (status(id).attention) warm.add(id)
-        })
-        return [...warm]
+        return warmSessionIDs(current(), tabs, history.entries, 2)
       },
-      limit: 3,
+      limit: 0,
     })
 
     createProgramStatus({

@@ -21,18 +21,29 @@ function wordmark(pad = "") {
 
 export type SessionEpilogue = { readonly title: string; readonly sessionID?: string }
 
-// Printed after the TUI closes.
-export function epilogue(input: { readonly session?: SessionEpilogue; readonly updatedVersion?: string }) {
+// Printed after the TUI closes. `command` is the invocation the user should type;
+// it defaults to the packaged launcher, and callers pass renamed/package commands.
+export function epilogue(
+  input: {
+    readonly session?: SessionEpilogue
+    readonly updatedVersion?: string
+    readonly command?: string
+  },
+) {
   if (!input.session && !input.updatedVersion) return
+  const command = input.command ?? "shake"
   const row = (label: string, value: string) => `  ${dim}${label.padEnd(10, " ")}${reset}${bold}${value}${reset}`
   return [
     ...wordmark("  "),
     "",
     ...(input.updatedVersion
-      ? [`  ${dim}Run ${reset}${bold}shake${reset}${dim} to use ${reset}${bold}${input.updatedVersion}${reset}`, ""]
+      ? [
+          `  ${dim}Run ${reset}${bold}${command}${reset}${dim} to use ${reset}${bold}${input.updatedVersion}${reset}`,
+          "",
+        ]
       : []),
     ...(input.session
-      ? [row("Session", input.session.title), row("Continue", `shake -s ${input.session.sessionID}`), ""]
+      ? [row("Session", input.session.title), row("Continue", `${command} -s ${input.session.sessionID}`), ""]
       : []),
   ].join("\n")
 }

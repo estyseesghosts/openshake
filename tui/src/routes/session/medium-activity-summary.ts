@@ -3,41 +3,59 @@ import { canonicalToolName, executeCalls, finiteNumber, type ExecuteCall } from 
 
 export type MediumAction = { name: string; /** Files changed by one tool call; apply_patch may span several. */ files?: number }
 
-type Phrase = { verb: string; noun: (count: number) => string; count: number }
+type Phrase = { category: string; verb: string; noun: (count: number) => string; count: number }
+type Template = Omit<Phrase, "count">
 
-const activityPhrases: Record<string, Omit<Phrase, "count">> = {
-  read: { verb: "Read", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
-  glob: { verb: "Searched", noun: (count) => `${count} ${count === 1 ? "time" : "times"}` },
-  grep: { verb: "Searched", noun: (count) => `${count} ${count === 1 ? "time" : "times"}` },
-  websearch: { verb: "Searched", noun: (count) => `${count} ${count === 1 ? "time" : "times"}` },
-  webfetch: { verb: "Fetched", noun: (count) => `${count} ${count === 1 ? "page" : "pages"}` },
-  shell: { verb: "Ran", noun: (count) => `${count} ${count === 1 ? "command" : "commands"}` },
-  execute: { verb: "Ran", noun: (count) => `${count} ${count === 1 ? "script" : "scripts"}` },
+const activityPhrases: Record<string, Template> = {
+  read: { category: "read", verb: "Read", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
+  glob: { category: "search", verb: "Searched", noun: (count) => `${count} ${count === 1 ? "time" : "times"}` },
+  grep: { category: "search", verb: "Searched", noun: (count) => `${count} ${count === 1 ? "time" : "times"}` },
+  websearch: { category: "search", verb: "Searched", noun: (count) => `${count} ${count === 1 ? "time" : "times"}` },
+  webfetch: { category: "fetch", verb: "Fetched", noun: (count) => `${count} ${count === 1 ? "page" : "pages"}` },
+  shell: { category: "command", verb: "Ran", noun: (count) => `${count} ${count === 1 ? "command" : "commands"}` },
+  execute: { category: "script", verb: "Ran", noun: (count) => `${count} ${count === 1 ? "script" : "scripts"}` },
 }
 
-const editPhrases: Record<string, Omit<Phrase, "count">> = {
-  edit: { verb: "Edited", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
-  write: { verb: "Edited", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
-  patch: { verb: "Edited", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
+const editPhrases: Record<string, Template> = {
+  edit: { category: "edit", verb: "Edited", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
+  write: { category: "edit", verb: "Edited", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
+  patch: { category: "edit", verb: "Edited", noun: (count) => `${count} ${count === 1 ? "file" : "files"}` },
 }
 
-/** Count actions by verb, preserving the order in which each verb first appeared. */
-function phrases(actions: readonly MediumAction[], table: Record<string, Omit<Phrase, "count">>): Phrase[] {
-  const result: Phrase[] = []
-  const byVerb = new Map<string, Phrase>()
+/**
+ * Count actions by semantic category, not just by display verb: `shell` and `execute`
+ * both say "Ran" but describe different work. Verbs keep their first-appearance order;
+ * categories sharing a verb follow table order so a mixed run never depends on arrival order.
+ */
+function phrases(actions: readonly MediumAction[], table: Record<string, Template>): Phrase[] {
+  const byCategory = new Map<string, Phrase>()
   actions.forEach((action) => {
     const template = table[canonicalToolName(action.name.toLowerCase())]
     if (!template) return
-    let phrase = byVerb.get(template.verb)
+    let phrase = byCategory.get(template.category)
     if (!phrase) {
       phrase = { ...template, count: 0 }
-      byVerb.set(template.verb, phrase)
-      result.push(phrase)
+      byCategory.set(template.category, phrase)
     }
     // One apply_patch call can change several files, so a tool call is not a file.
     const files = action.files
     phrase.count += typeof files === "number" && Number.isFinite(files) && files > 0 ? Math.floor(files) : 1
   })
+  const rank = new Map<string, number>()
+  Object.values(table).forEach((template) => {
+    if (!rank.has(template.category)) rank.set(template.category, rank.size)
+  })
+  const result: Phrase[] = []
+  const verbs = new Set<string>()
+  for (const phrase of byCategory.values()) {
+    if (verbs.has(phrase.verb)) continue
+    verbs.add(phrase.verb)
+    result.push(
+      ...[...byCategory.values()]
+        .filter((item) => item.verb === phrase.verb)
+        .sort((a, b) => (rank.get(a.category) ?? 0) - (rank.get(b.category) ?? 0)),
+    )
+  }
   return result
 }
 
@@ -68,11 +86,15 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+/** Nested failures can arrive in progress or success metadata before the outer call is finalized. */
+export function mediumExecuteMetadataFailed(metadata: unknown) {
+  return executeCalls(record(metadata)?.toolCalls).some((call) => call.status === "error")
+}
+
 /** A Code Mode call can end in failure while its own tool state stays completed. */
 export function mediumExecuteFailed(part: SessionMessageAssistantTool) {
   if (canonicalToolName(part.name.toLowerCase()) !== "execute") return false
-  const metadata = record(record(part.state)?.metadata)
-  return executeCalls(metadata?.toolCalls).some((call) => call.status === "error")
+  return mediumExecuteMetadataFailed(record(part.state)?.metadata)
 }
 
 function editFiles(part: SessionMessageAssistantTool): readonly unknown[] {

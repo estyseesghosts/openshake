@@ -4,11 +4,15 @@ export interface PatchHunk {
   readonly rows?: number
 }
 
-export interface AddedPatchChunk {
+export interface PatchChunk {
   readonly patch: string
   readonly lines: readonly string[]
   readonly rows: number
 }
+
+export type AddedPatchChunk = PatchChunk
+
+const hunkHeader = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/m
 
 /**
  * Splits a new-file patch into chunks of `size` lines, each a valid patch with its own `@@ -0,0 +start,count @@`
@@ -37,6 +41,52 @@ export function splitAddedPatch(patch: string, size: number): AddedPatchChunk[] 
   })
 }
 
+/**
+ * Chunks any large patch, including modified files with context and removed lines. Each chunk carries recomputed
+ * old/new header counts so it remains a valid standalone patch instead of one enormous renderable.
+ */
+export function splitLargePatch(patch: string, size: number): PatchChunk[] | undefined {
+  const added = splitAddedPatch(patch, size)
+  if (added) return added
+
+  const chunks: PatchChunk[] = []
+  for (const hunk of splitPatchHunks(patch)) {
+    const header = hunkHeader.exec(hunk.patch)
+    if (!header) return
+    const prefix = hunk.patch.slice(0, header.index)
+    const suffix = header[5] ?? ""
+    const body = hunk.patch
+      .slice(header.index + header[0].length)
+      .replace(/^\n/, "")
+      .replace(/\n$/, "")
+      .split("\n")
+    const marker = body.at(-1)?.startsWith("\\ No newline at end of file") ? body.pop() : undefined
+    let oldLine = Number(header[1])
+    let newLine = Number(header[3])
+
+    for (let start = 0; start < body.length; start += size) {
+      const lines = body.slice(start, start + size)
+      let oldCount = 0
+      let newCount = 0
+      for (const line of lines) {
+        const first = line[0] ?? " "
+        if (first === "+" || first === " ") newCount++
+        if (first === "-" || first === " ") oldCount++
+      }
+      const chunkHeader = `@@ -${oldLine},${oldCount} +${newLine},${newCount} @@${suffix}`
+      const tail = marker && start + size >= body.length ? `\n${marker}` : ""
+      chunks.push({
+        patch: `${prefix}${chunkHeader}\n${lines.join("\n")}${tail}`,
+        lines,
+        rows: countRows(lines),
+      })
+      oldLine += oldCount
+      newLine += newCount
+    }
+  }
+  return chunks
+}
+
 export function splitPatchHunks(patch: string): PatchHunk[] {
   const starts = [...patch.matchAll(/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@.*$/gm)].map((match) => match.index)
   if (starts.length <= 1) return [{ patch }]
@@ -54,7 +104,10 @@ export function splitPatchHunks(patch: string): PatchHunk[] {
 }
 
 function splitRows(hunk: string) {
-  const lines = hunk.replace(/\n$/, "").split("\n").slice(1)
+  return countRows(hunk.replace(/\n$/, "").split("\n").slice(1))
+}
+
+function countRows(lines: readonly string[]) {
   let rows = 0
   let index = 0
 

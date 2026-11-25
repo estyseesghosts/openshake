@@ -123,6 +123,7 @@ import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { SessionTurn } from "@opencode/util/session-turn"
 import { TextBoundary } from "@opencode/util/text-boundary"
 import { useSessionTabs, type ScrollAnchor } from "../../context/session-tabs"
+import { mapLimited } from "../../context/session-tabs-thermal"
 import { createSingleFlight } from "../../util/single-flight"
 import { createDelayedPresence } from "../../util/delayed-presence"
 import { SessionLocationMissing } from "./location-missing"
@@ -304,7 +305,9 @@ export function Session(props: {
     // A scroll-triggered history load joins this boundary load instead of publishing its own page.
     () => pinAbove(),
   )
-  const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
+  const boundaries = createMemo(() =>
+    messageBoundaryIDs(rows, (messageID) => data.session.message.get(route.sessionID, messageID)),
+  )
   const anchors = createTimelineAnchors()
   const [navigationMessage, setNavigationMessage] = createSignal<string>()
   const [navigationSlack, setNavigationSlack] = createSignal(0)
@@ -341,9 +344,14 @@ export function Session(props: {
   createEffect(
     on([descendantSessionIDs, () => client.connection.status()], ([sessionIDs, status]) => {
       if (status !== "connected") return
-      void Promise.allSettled(
-        sessionIDs.flatMap((sessionID) => [data.session.permission.sync(sessionID), data.session.form.sync(sessionID)]),
-      )
+      // Bounded fan-out: one RPC pair at a time per small batch, so a busy family
+      // cannot saturate the transport with one request per descendant simultaneously.
+      void mapLimited(sessionIDs, 2, async (sessionID) => {
+        await Promise.all([
+          data.session.permission.sync(sessionID).catch(() => undefined),
+          data.session.form.sync(sessionID).catch(() => undefined),
+        ])
+      })
     }),
   )
 

@@ -7,9 +7,11 @@ import {
   messagePath,
   partitionPending,
   partPath,
+  type PartRef,
+  type SessionEntry,
   type SessionRow,
 } from "../../../src/routes/session/grouping/session"
-import { reduceSessionRows } from "../../../src/routes/session/rows"
+import { reduceSessionRows, resolvePart } from "../../../src/routes/session/rows"
 import { mediumActivitySummary, mediumEditsSummary } from "../../../src/routes/session/medium-activity-summary"
 
 const model = { id: "model", providerID: "provider" }
@@ -166,23 +168,66 @@ test("medium keeps low and high projections byte-for-byte unchanged", () => {
     instruction("i", ["AGENTS.md"]),
     assistant("b", [tool("sh", "shell"), tool("r2", "read"), { type: "text", text: "Done" }], "stop"),
   ]
-  const shape = (verbosity: "low" | "high") =>
-    reduceSessionRows(messages, new Set(), false, verbosity).map((row) =>
-      row.type === "group" ? `${row.kind}:${row.size}` : row.type,
-    )
-  expect(shape("low")).toEqual(["message", "activity:3", "part", "activity:3", "part", "assistant-footer"])
-  expect(shape("high")).toEqual([
-    "message",
-    "reasoning:1",
-    "exploration:1",
-    "part",
-    "part",
-    "instructions:1",
-    "part",
-    "exploration:1",
-    "part",
-    "assistant-footer",
-  ])
+  const message = (id: string) => messages.find((item) => item.id === id)
+  const detail = (ref: PartRef) => {
+    const item = message(ref.messageID)
+    if (item?.type !== "assistant") return ref.partID
+    const part = resolvePart(item, ref.partID)
+    if (!part) return ref.partID
+    return part.type === "tool" ? `${ref.partID}=${part.name}/${part.state.status}` : `${ref.partID}=${part.text}`
+  }
+  type Node = {
+    type: string
+    kind?: string
+    size?: number
+    completed?: boolean
+    pending?: readonly PartRef[]
+    children?: readonly Node[]
+    entry?: SessionEntry
+    ref?: PartRef
+    messageID?: string
+  }
+  const payload = (entry: SessionEntry) =>
+    entry.type === "part"
+      ? detail(entry.ref)
+      : entry.type === "message"
+        ? `${entry.messageID}:${message(entry.messageID)?.type}`
+        : entry.type
+  const groupText = (node: Node) => {
+    const pending = node.pending?.length ?? 0
+    const children = renderRows(node.children ?? [], ",")
+    return `${node.kind}:${node.size}:${node.completed}:pending=${pending}[${children}]`
+  }
+  // Include refs, lifecycle state and the text/tool content that actually renders,
+  // so a change to low or high content fails even when row kinds and sizes stay put.
+  const renderRows = (nodes: readonly Node[], separator: string): string =>
+    nodes
+      .map((node) => {
+        if (node.type === "group") return groupText(node)
+        if (node.type === "part" && node.ref) return `part(${detail(node.ref)})`
+        if (node.type === "entry" && node.entry) return `entry(${payload(node.entry)})`
+        if (node.type === "message" && node.messageID)
+          return `message(${node.messageID}:${message(node.messageID)?.type})`
+        return node.type
+      })
+      .join(separator)
+  const rendered = (verbosity: "low" | "high") =>
+    renderRows(reduceSessionRows(messages, new Set(), false, verbosity), " | ")
+
+  expect(rendered("low")).toBe(
+    "message(u:user) | activity:3:true:pending=0[reasoning:1:undefined:pending=0[entry(reasoning:0=Plan)]," +
+      "exploration:1:undefined:pending=0[entry(r1=read/completed)],entry(e1=edit/completed)] | " +
+      "part(q=question/completed) | activity:3:true:pending=0[instructions:1:undefined:pending=0[entry(i:synthetic)]," +
+      "entry(sh=shell/completed),exploration:1:undefined:pending=0[entry(r2=read/completed)]] | " +
+      "part(text:0=Done) | assistant-footer",
+  )
+  expect(rendered("high")).toBe(
+    "message(u:user) | reasoning:1:true:pending=0[entry(reasoning:0=Plan)] | " +
+      "exploration:1:true:pending=0[entry(r1=read/completed)] | part(e1=edit/completed) | " +
+      "part(q=question/completed) | instructions:1:true:pending=0[entry(i:synthetic)] | " +
+      "part(sh=shell/completed) | exploration:1:true:pending=0[entry(r2=read/completed)] | " +
+      "part(text:0=Done) | assistant-footer",
+  )
 })
 
 test("live appends under low merge into the open activity group", () => {

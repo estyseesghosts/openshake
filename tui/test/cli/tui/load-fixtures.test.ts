@@ -18,25 +18,25 @@ const scale: LoadScale = {
 test("load fixtures are deterministic and model interleaved agents and tools", () => {
   const first = createLoadFixture(scale)
   const second = createLoadFixture(scale)
-  expect(first.messages.length).toBe(
+  expect([...first.messages.values()].flat().length).toBe(
     scale.sessions * (scale.messagesPerSession + Math.ceil(scale.messagesPerSession / 50)),
   )
+  expect(first.messages.size).toBe(scale.sessions)
   expect(first.diff).toBe(second.diff)
   expect(first.diff.split("\n")).toHaveLength(scale.diffLines)
   expect(first.screenshots).toEqual(second.screenshots)
 
-  const agents = new Set(
-    first.messages.flatMap((message) => (message.type === "assistant" ? [message.agent] : [])),
-  )
+  const all = [...first.messages.values()].flat()
+  const agents = new Set(all.flatMap((message) => (message.type === "assistant" ? [message.agent] : [])))
   expect(agents.size).toBe(scale.assistants)
   const tools = new Set(
-    first.messages.flatMap((message) =>
+    all.flatMap((message) =>
       message.type === "assistant" ? message.content.flatMap((part) => (part.type === "tool" ? [part.name] : [])) : [],
     ),
   )
   expect(tools.has("edit")).toBe(true)
   expect(tools.has("shell")).toBe(true)
-  expect(first.messages.some((message) => message.type === "idle")).toBe(true)
+  expect(all.some((message) => message.type === "idle")).toBe(true)
 })
 
 test("the benchmark coalesces events and keeps row mutations bounded", async () => {
@@ -47,11 +47,14 @@ test("the benchmark coalesces events and keeps row mutations bounded", async () 
   expect(report.publications).toBeLessThan(report.events / 3)
   expect(report.rowMutations).toBeGreaterThanOrEqual(scale.assistants)
   expect(report.rowMutations).toBeLessThanOrEqual(
-    scale.assistants + Math.ceil(scale.deltaRounds / 50) * 25,
+    scale.assistants * scale.sessions + Math.ceil(scale.deltaRounds / 50) * 25,
   )
   expect(report.compactions).toBe(1)
   expect(report.terminalPayload.endsWith("final")).toBe(true)
   expect(report.firstFrameLatencyMs).toBeGreaterThanOrEqual(0)
+  expect(report.residentBytesBySession.size).toBe(scale.sessions)
+  expect(report.peakResidentBytes).toBeGreaterThanOrEqual(report.residentTranscriptBytes)
+  expect(report.diffChunks).toBeGreaterThan(0)
 })
 
 test("resident transcript and media bytes stay under configured ceilings", async () => {
