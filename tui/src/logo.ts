@@ -1,7 +1,13 @@
-export const logo = {
-  left: ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"],
-  right: ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"],
-}
+// OpenShake launch wordmark. Lowercase block letters: s/a/e are five cells tall,
+// h/k are six; every glyph is exactly four cells wide with one cell of spacing.
+export const logo = [
+  "     █         █        ",
+  "████ █     ██  █    ████",
+  "█    ███  █  █ █ █  █   ",
+  "████ █  █ ████ ██   ███ ",
+  "   █ █  █ █  █ █ █  █   ",
+  "████ █  █ █  █ █  █ ████",
+]
 
 export const go = {
   left: ["    ", "█▀▀▀", "█_^█", "▀▀▀▀"],
