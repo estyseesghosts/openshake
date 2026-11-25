@@ -1,0 +1,61 @@
+{
+  "name": "openshake",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "scripts": {
+    "dev": "bun run src/main.tsx",
+    "start": "bun run src/main.tsx",
+    "format": "bun fmt --no-script",
+    "format:check": "bun fmt --no-script --check",
+    "lint": "bun lint --no-script --type-aware --max-warnings 0",
+    "typecheck": "bun check",
+    "typecheck:tsc": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "verify": "bun run format:check && bun run lint && bun run typecheck && bun run test",
+    "vendor:sync": "bun run scripts/vendor-sync.ts"
+  },
+  "dependencies": {
+    "@opencode/client": "2.4.1",
+    "@opencode/core": "2.4.1",
+    "@opencode/plugin": "2.4.1",
+    "@opencode/schema": "2.4.1",
+    "@opencode/simulation": "2.4.1",
+    "@opencode/theme": "2.4.1",
+    "@opencode/ui": "2.4.1",
+    "@opencode/util": "2.4.1",
+    "@opentui/core": "0.9.9",
+    "@opentui/keymap": "0.9.9",
+    "@opentui/solid": "0.9.9",
+    "@solid-primitives/event-bus": "1.1.2",
+    "effect": "4.1.0",
+    "fuzzysort": "3.1.0",
+    "get-east-asian-width": "1.6.0",
+    "remeda": "2.26.0",
+    "solid-js": "1.9.17",
+    "string-width": "7.2.0",
+    "strip-ansi": "7.1.2"
+  },
+  "devDependencies": {
+    "@opencode/cli": "2.4.1",
+    "@tsconfig/bun": "1.0.9",
+    "@types/bun": "1.4.3",
+    "@typescript/native": "npm:typescript@7.1.0-beta",
+    "typescript": "npm:@typescript/typescript6@6.0.2"
+  },
+  "overrides": {
+    "@opentui/core": "0.9.9",
+    "@opentui/keymap": "0.9.9",
+    "@opentui/solid": "0.9.9",
+    "@types/node": "24.12.2",
+    "effect": "4.1.0",
+    "solid-js": "1.9.17"
+  },
+  "patchedDependencies": {
+    "solid-js@1.9.17": "patches/solid-js@1.9.17.patch"
+  },
+  "trustedDependencies": [
+    "@opencode/cli"
+  ]
+}

@@ -1,0 +1,13 @@
+preload = ["@opentui/solid/preload"]
+
+[fmt]
+printWidth = 120
+tabWidth = 2
+semi = false
+singleQuote = false
+trailingComma = "all"
+ignorePatterns = ["vendor/", "node_modules/", "dist/"]
+
+[lint]
+typeAware = true
+ignorePatterns = ["vendor/", "node_modules/", "dist/"]
