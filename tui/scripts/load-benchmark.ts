@@ -18,5 +18,11 @@ const scale: LoadScale = {
   diffLines: option("--diff-lines", defaultLoadScale.diffLines),
 }
 
-const report = await runLoadBenchmark(scale)
+// Opt-in wall-clock measurement; never enabled by CI's deterministic assertions.
+const realFrames = process.argv.includes("--real-frames")
+const report = await runLoadBenchmark(scale, {
+  realFrames,
+  width: option("--width", 100),
+  height: option("--height", 30),
+})
 console.log(JSON.stringify(report, null, 2))

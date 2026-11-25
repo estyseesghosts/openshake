@@ -1,5 +1,5 @@
 import type { SessionInboxEnqueued, SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
-import { createEffect, on, onCleanup, type Accessor } from "solid-js"
+import { createEffect, createSignal, on, onCleanup, untrack, type Accessor } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useConfig } from "../../config"
 import { useData } from "../../context/data"
@@ -504,7 +504,7 @@ function tokenTotal(tokens: NonNullable<SessionMessageAssistant["tokens"]>) {
 }
 
 export function messageBoundaryIDs(
-  rows: SessionRow[],
+  rows: readonly SessionRow[],
   messages: SessionMessageInfo[] | ((messageID: string) => SessionMessageInfo | undefined),
 ) {
   // The route passes the client's O(1) message lookup so a streamed delta no longer
@@ -519,6 +519,28 @@ export function messageBoundaryIDs(
     seen.add(id)
     return id
   })
+}
+
+/**
+ * Boundary IDs belong to the structural row projection. Recompute them only when a
+ * row is added, removed or merged (its `key` changes), never when a streamed delta
+ * mutates a part's text inside an existing row. Keeping this here also means the
+ * route never builds a second message map or subscribes to whole-history content.
+ */
+export function createRowBoundaries(
+  rows: readonly (SessionRow & { key?: string })[],
+  message: (messageID: string) => SessionMessageInfo | undefined,
+) {
+  const [boundaries, setBoundaries] = createSignal<readonly (string | undefined)[]>([])
+  let previousShape = ""
+  createEffect(() => {
+    // Reading only row keys tracks structure, not streamed part content.
+    const shape = rows.map((row) => rowKey(row)).join("\u0000")
+    if (shape === previousShape) return
+    previousShape = shape
+    setBoundaries(untrack(() => messageBoundaryIDs(rows, message)))
+  })
+  return boundaries
 }
 
 export function sessionRowID(row: SessionRow, boundaryID?: string) {
