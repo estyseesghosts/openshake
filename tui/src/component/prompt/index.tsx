@@ -38,7 +38,7 @@ import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../pro
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteOption, type AutocompleteRef, Autocomplete } from "./autocomplete"
-import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { onAnimationTick, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { createColors, createFrames } from "../../ui/spinner"
@@ -1658,24 +1658,32 @@ export function Prompt(props: PromptProps) {
     onMove: () => void move.open(),
   })
 
-  const spinnerDef = createMemo(() => {
+  // The work scanner used to sit beside "esc interrupt". Its back-and-forth color trail now drives the
+  // agent-colored rail, so the same motion marks working state without taking space in the status row.
+  const workScannerWidth = 8
+  const workScanner = createMemo(() => {
     const color = promptDisplay().agentColor ?? theme.border.base
-    return {
-      frames: createFrames({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
-      color: createColors({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
+    const options = {
+      color,
+      width: workScannerWidth,
+      style: "blocks" as const,
+      inactiveFactor: 0.6,
+      minAlpha: 0.3,
     }
+    return { frames: createFrames(options), colors: createColors(options) }
+  })
+  const [workFrame, setWorkFrame] = createSignal(0)
+  onAnimationTick(
+    () => (status() === "running" && animationsEnabled() ? 1000 / 40 : undefined),
+    (_deltaTime, ticks) => setWorkFrame((value) => (value + ticks) % workScanner().frames.length),
+  )
+  const railColor = createMemo(() => {
+    const border = borderHighlight()
+    if (status() !== "running" || !animationsEnabled()) return border
+    const scanner = workScanner()
+    const animated = scanner.colors(workFrame(), 0, scanner.frames.length, workScannerWidth)
+    const level = animated instanceof RGBA ? animated.a : 1
+    return RGBA.fromValues(border.r, border.g, border.b, border.a * level)
   })
   const maxHeight = createMemo(() => Math.max(6, Math.floor(dimensions().height / 3)))
 
@@ -1687,7 +1695,7 @@ export function Prompt(props: PromptProps) {
         <box
           width="100%"
           border={["left"]}
-          borderColor={borderHighlight()}
+          borderColor={railColor()}
           customBorderChars={{
             ...SplitBorder.customBorderChars,
             bottomLeft: "╹",
@@ -1885,7 +1893,7 @@ export function Prompt(props: PromptProps) {
         <box
           height={1}
           border={["left"]}
-          borderColor={borderHighlight()}
+          borderColor={railColor()}
           customBorderChars={{
             ...EmptyBorder,
             vertical: promptBg().a !== 0 ? "╹" : " ",
@@ -1922,12 +1930,7 @@ export function Prompt(props: PromptProps) {
               >
                 <Switch>
                   <Match when={status() === "running"}>
-                    <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
-                      <box marginLeft={1}>
-                        <Show when={config.animations ?? true} fallback={<text fg={theme.text.muted}>[⋯]</text>}>
-                          <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                        </Show>
-                      </box>
+                    <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start" marginLeft={1}>
                       <PromptInterruptStatus
                         armed={store.interrupt > 0}
                         animations={animationsEnabled()}
