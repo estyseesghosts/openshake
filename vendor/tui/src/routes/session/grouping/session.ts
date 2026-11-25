@@ -45,6 +45,10 @@ function isPendingKind(kind: GroupKind): kind is PendingKind {
   return pendingKinds.has(kind)
 }
 
+function pendingGroup(row: SessionGroup): row is Extract<SessionGroup, { kind: PendingKind }> {
+  return isPendingKind(row.kind)
+}
+
 /** Experimental transcript detail; undefined selects the default production rules. */
 export type Verbosity = "low" | "medium" | "high"
 export const defaultVerbosity: Verbosity = "low"
@@ -183,7 +187,7 @@ export function append(
   if (previous?.type === "group" && previous.kind === node.kind) {
     // Permission-blocked tools remain at the end, just as the former refs/pending
     // partition did. Inserting a new ref must precede those blocked tools.
-    const pending = isPendingKind(previous.kind) ? previous.pending.length : 0
+    const pending = pendingGroup(previous) ? previous.pending.length : 0
     const [left, right] = splitGroups([previous], previous.size - pending)
     const [merged] = mergeGroups(mergeGroups(left, [node]), right)
     if (merged.type !== "group") throw new Error("Expected merged session group")
@@ -207,7 +211,7 @@ export function completePrevious(rows: SessionRow[], index = rows.length) {
 
 /** Part references for an existing production subgroup, not a flat timeline. */
 export function groupRefs(row: SessionGroup, includePending = false): PartRef[] {
-  const pending = !includePending && isPendingKind(row.kind) ? row.pending : []
+  const pending = !includePending && pendingGroup(row) ? row.pending : []
   const visit = (nodes: readonly GroupNode<SessionEntry, GroupKind>[]): PartRef[] =>
     nodes.flatMap((node) => {
       if (node.type === "group") return visit(node.children)
@@ -221,7 +225,7 @@ export function groupRefs(row: SessionGroup, includePending = false): PartRef[] 
 
 export function partitionPending(rows: SessionRow[], pending: Set<string>) {
   rows.forEach((row) => {
-    if (row.type !== "group" || !isPendingKind(row.kind)) return
+    if (row.type !== "group" || !pendingGroup(row)) return
     // The production exploration rule creates direct part children. Preserve the
     // existing stable partition order when permissions are admitted or dismissed.
     // Activity groups render blocked tools outside the summary without reordering.
