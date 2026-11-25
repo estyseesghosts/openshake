@@ -96,6 +96,7 @@ export type BenchmarkReport = {
   events: number
   publications: number
   rowMutations: number
+  compactions: number
   terminalPayload: string
   firstFrameLatencyMs: number
   residentTranscriptBytes: number
@@ -118,6 +119,7 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
   let events = 0
   let publications = 0
   let rowMutations = 0
+  let compactions = 0
   const scheduled: Array<() => void> = []
   const publishedParts = new Map<string, string>()
   const partIndex = new PartIndex()
@@ -134,6 +136,9 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
     const ref = { messageID: `${primary}-agent-${agent}`, partID: `text:${agent}` }
     partIndex.materialize(ref, () => rowMutations++)
   }
+
+  const window = new MessageWindow()
+  window.set(primary, fixture.messages.slice(-100), "newest")
 
   const start = performance.now()
   let firstFrameLatencyMs = 0
@@ -169,14 +174,20 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
       coalescer.dispose()
       scheduled.length = 0
     }
+    if (round === Math.floor(scale.deltaRounds * 0.75)) {
+      // Compaction replaces the resident tail and rebuilds derived indexes while
+      // streaming continues, exercising the reconciliation path.
+      window.set(primary, fixture.messages.slice(-10), "post-compaction")
+      partIndex.rebuild([])
+      compactions++
+      events++
+    }
   }
   // A terminal event flushes the final payload synchronously.
   coalescer.text(primary, `${primary}-agent-0`, "final")
   events++
   coalescer.flush()
 
-  const window = new MessageWindow()
-  window.set(primary, fixture.messages.slice(-100), "newest")
   for (let index = 0; index < Math.min(4, sessions.length - 1); index++) {
     const offset = index * 25
     window.prepend(primary, fixture.messages.slice(offset, offset + 25), `page-${index}`, `next-${index}`)
@@ -205,6 +216,7 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
     events,
     publications,
     rowMutations,
+    compactions,
     terminalPayload: publishedParts.get(`${primary}:${primary}-agent-0:text`) ?? "",
     firstFrameLatencyMs,
     residentTranscriptBytes,

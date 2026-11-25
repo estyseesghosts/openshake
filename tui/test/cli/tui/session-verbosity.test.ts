@@ -339,6 +339,29 @@ test("a finished execute with no nested calls counts as one tool", () => {
   expect(activitySummary([{ message, part: tool("x", "execute") }], 0).label).toBe("1 tool")
 })
 
+test("a failed nested call pulls its completed execute tool out of the medium group", () => {
+  const failedExecute: SessionMessageAssistantTool = {
+    ...tool("exec", "execute"),
+    state: {
+      status: "completed",
+      input: {},
+      content: [],
+      metadata: { toolCalls: [{ tool: "read", status: "error", input: { path: "src/a.ts" } }] },
+    },
+  }
+  const rows = reduceSessionRows(
+    [assistant("a", [tool("r1", "read"), failedExecute, tool("r2", "read")])],
+    new Set(),
+    false,
+    "medium",
+  )
+  expect(rows.map((row) => (row.type === "group" ? `${row.kind}:${row.size}` : row.type))).toEqual([
+    "medium-activity:1",
+    "part",
+    "medium-activity:1",
+  ])
+})
+
 test("medium failed tools leave their group and stay standalone", () => {
   const rows = reduceSessionRows(
     [

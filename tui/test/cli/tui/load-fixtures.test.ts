@@ -49,6 +49,7 @@ test("the benchmark coalesces events and keeps row mutations bounded", async () 
   expect(report.rowMutations).toBeLessThanOrEqual(
     scale.assistants + Math.ceil(scale.deltaRounds / 50) * 25,
   )
+  expect(report.compactions).toBe(1)
   expect(report.terminalPayload.endsWith("final")).toBe(true)
   expect(report.firstFrameLatencyMs).toBeGreaterThanOrEqual(0)
 })
