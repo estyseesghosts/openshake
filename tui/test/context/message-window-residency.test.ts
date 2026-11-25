@@ -91,7 +91,7 @@ test("server page boundaries survive set() with explicit pages", () => {
 test("byte accounting includes tool inputs, metadata and native replay data", () => {
   const base = user("small")
   type JsonRecord = { [key: string]: string | number | boolean | null | JsonRecord | JsonRecord[] }
-  const tool = (input: JsonRecord, metadata: JsonRecord, native: JsonRecord): SessionMessageInfo => ({
+  const tool = (input: JsonRecord, metadata: JsonRecord): SessionMessageInfo => ({
     type: "assistant",
     id: "tool",
     agent: "build",
@@ -105,12 +105,12 @@ test("byte accounting includes tool inputs, metadata and native replay data", ()
         id: "t",
         name: "write",
         time: { created: 1 },
-        state: { status: "running", input, metadata, native },
+        state: { status: "running", input, metadata },
       },
     ],
   })
-  expect(messageBytes(tool({ value: "i".repeat(5000) }, {}, {}))).toBeGreaterThan(messageBytes(base) * 20)
-  expect(messageBytes(tool({}, {}, {}))).toBeLessThan(messageBytes(tool({ value: "i".repeat(5000) }, {}, {})))
+  expect(messageBytes(tool({ value: "i".repeat(5000) }, {}))).toBeGreaterThan(messageBytes(base) * 20)
+  expect(messageBytes(tool({}, {}))).toBeLessThan(messageBytes(tool({ value: "i".repeat(5000) }, {})))
 })
 
 test("one pathological message cannot defeat the byte budget", () => {

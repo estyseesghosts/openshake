@@ -2,7 +2,7 @@ import { existsSync } from "fs"
 import path from "path"
 import { render, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import "./component/spinner-renderable"
-import { Effect, Latch } from "effect"
+import { Effect, Fiber, Latch } from "effect"
 import { Service, type Endpoint } from "@opencode/client/effect/service"
 import { OpenCode, type SessionInfo } from "@opencode/client"
 import { Global } from "@opencode/util/global"
@@ -55,6 +55,7 @@ import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { ClientProvider, useClient } from "./context/client"
 import { StartupLoading } from "./component/startup-loading"
+import { paintBootShell } from "./component/boot-shell"
 import { DevToolsBar } from "./component/devtools-bar"
 import { Reconnecting } from "./component/reconnecting"
 import { MigrationOverlay } from "./component/migration-overlay"
@@ -231,12 +232,15 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
     fetch: noTimeoutFetch,
   }
   const api = OpenCode.make(options)
-  const location = yield* Effect.tryPromise(() => api.file.list({ location: { directory: process.cwd() } })).pipe(
-    Effect.map((response) => response.location),
-    Effect.catch(() => Effect.tryPromise(() => api.location.get())),
+  // Start the location RPC immediately, but never let it gate the renderer. The
+  // fork is joined only after the boot shell has been painted, so a slow location
+  // response cannot leave an empty terminal during cold start.
+  const locationFiber = yield* Effect.forkChild(
+    Effect.tryPromise(() => api.file.list({ location: { directory: process.cwd() } })).pipe(
+      Effect.map((response) => response.location),
+      Effect.catch(() => Effect.tryPromise(() => api.location.get())),
+    ),
   )
-  startupTiming.mark("location")
-  const directory = location.directory
   // Local plugin discovery is optional startup work. It starts after the first
   // frame below, so it can never delay the renderer or the first input response.
   const handoff = input.terminalHandoff ? yield* Effect.promise(input.terminalHandoff) : undefined
@@ -300,6 +304,13 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       })
       startupTiming.mark("renderer")
       renderer.setMaxListeners(15)
+      // Paint a location-independent shell now. The location RPC continues in its
+      // fiber; only after this frame exists do we wait for it.
+      const disposeBootShell = paintBootShell(renderer)
+      yield* Effect.addFinalizer(() => Effect.sync(disposeBootShell))
+      const location = yield* Fiber.join(locationFiber)
+      startupTiming.mark("location")
+      const directory = location.directory
       const clipboard = yield* Effect.acquireRelease(
         Effect.sync(() => createTuiClipboard(renderer)),
         (clipboard) =>
@@ -332,6 +343,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         let setPluginDirectories: (directories: string[]) => void = () => {}
         if (renderer.isDestroyed) return
 
+        // The full app is ready now; replace the minimal boot shell with it.
+        disposeBootShell()
         await render(() => {
           const [mode, setMode] = createSignal<ThemeMode>(fallback)
           const [directories, setDirectories] = createSignal<string[]>([])

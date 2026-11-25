@@ -139,25 +139,36 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       unread: {},
     })
     const current = () => (route.data.type === "session" ? root(route.data.sessionID) : undefined)
-    // Root/family counters are reconciled from reactive member state. Drawing N tabs
-    // then reads N snapshots instead of walking N families each time.
+    // Counters are maintained incrementally: one effect per family member observes
+    // only that member's active/pending/form/permission state. The membership effect
+    // below reruns only when tabs or family membership change, never when a member's
+    // busy/attention state flips, so drawing tabs never rebuilds every family.
     const aggregates = new FamilyAggregates()
-    const syncAggregates = createMemo(() => {
+    const [aggregateVersion, setAggregateVersion] = createSignal(0)
+    const memberCounts = (id: string) => ({
+      running: data.session.status(id) === "running" ? 1 : 0,
+      pending: data.session.pending.list(id).some((item) => item.type !== "synthetic") ? 1 : 0,
+      forms: (data.session.form.list(id)?.length ?? 0) > 0 ? 1 : 0,
+      permissions: (data.session.permission.list(id)?.length ?? 0) > 0 ? 1 : 0,
+    })
+    const observed = new Set<string>()
+    createEffect(() => {
       const roots = new Set(state().tabs.map((tab) => root(tab.sessionID)))
-      const observations = [...roots].flatMap((rootID) =>
-        family(rootID).map((id) => ({
-          sessionID: id,
-          root: rootID,
-          counts: {
-            running: data.session.status(id) === "running" ? 1 : 0,
-            pending: data.session.pending.list(id).some((item) => item.type !== "synthetic") ? 1 : 0,
-            forms: (data.session.form.list(id)?.length ?? 0) > 0 ? 1 : 0,
-            permissions: (data.session.permission.list(id)?.length ?? 0) > 0 ? 1 : 0,
-          },
-        })),
-      )
-      aggregates.sync(observations)
-      return aggregates
+      const members = new Set([...roots].flatMap((rootID) => family(rootID)))
+      for (const id of observed) {
+        if (!members.has(id)) aggregates.remove(id)
+      }
+      observed.clear()
+      for (const id of members) {
+        observed.add(id)
+        const rootID = root(id)
+        // Owned by the membership effect: Solid disposes it automatically when the
+        // member leaves the family, so no manual subscription bookkeeping is needed.
+        createEffect(() => {
+          aggregates.update({ sessionID: id, root: rootID, counts: memberCounts(id) })
+          setAggregateVersion((version) => version + 1)
+        })
+      }
     })
     const newTab = createMemo((open = false) => {
       if (route.data.type === "home") return true
@@ -176,7 +187,7 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     })
     const status = (sessionID: string) => {
       const session = root(sessionID)
-      syncAggregates()
+      aggregateVersion()
       const counts = aggregates.snapshot(session)
       return {
         // Unread reads the root session only: background subagent completions wake the parent,
