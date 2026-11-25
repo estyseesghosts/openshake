@@ -72,6 +72,7 @@ export function createSessionRows(
       inputs,
       turnTokens(),
       verbosity(),
+      data.session.idle.has(sessionID()),
     )
     partitionPending(rows, pendingPermissions())
     const position = rows.findIndex((row) => row.type === "message" && inputs.has(row.messageID))
@@ -380,6 +381,8 @@ export function reduceSessionRows(
   inputs = new Set<string>(),
   turnTokens = false,
   verbosity: Verbosity = defaultVerbosity,
+  /** Precomputed idle-marker presence, so the reduction does not rescan history. */
+  hasIdle = messages.some((message) => message.type === "idle"),
 ) {
   const isInput = (message: SessionMessageInfo) => inputs.has(message.id)
   const pendingCompactions = messages.filter((message) => message.type === "compaction" && message.status === "running")
@@ -389,7 +392,7 @@ export function reduceSessionRows(
     : undefined
   // Without any idle marker, history predates markers and a turn ends with its terminal step.
   // With markers, steers keep the turn open, so usage accumulates until the marker closes it.
-  const legacy = !messages.some((message) => message.type === "idle")
+  const legacy = !hasIdle
   const flushTurn = (rows: ProjectionEntry[]) => {
     if (!usage) return
     const steps = usage.steps.filter(hasTokenUsage)
