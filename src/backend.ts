@@ -22,10 +22,10 @@ export type CliOptions = BackendOptions & {
   readonly directory?: string
 }
 
-const usage = `openshake — vendored OpenCode TUI
+const usage = `shake - vendored OpenCode TUI
 
 Usage:
-  openshake [options] [directory]
+  shake [options] [directory]
 
 Options:
   --server <url>      Connect to a remote OpenCode server (or OPEN_SHAKE_SERVER)

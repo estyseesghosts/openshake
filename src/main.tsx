@@ -54,7 +54,7 @@ async function main() {
     args: {},
     config: createConfigService(),
     packages: { prepare },
-    log: (level, message) => process.stderr.write(`[openshake] ${level}: ${message}\n`),
+    log: (level, message) => process.stderr.write(`[shake] ${level}: ${message}\n`),
   })
 
   await Effect.runPromise(Effect.provide(Effect.provide(tui, layer), NodeServices.layer))
@@ -62,6 +62,6 @@ async function main() {
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`openshake: ${message}\n`)
+  process.stderr.write(`shake: ${message}\n`)
   process.exitCode = 1
 })
