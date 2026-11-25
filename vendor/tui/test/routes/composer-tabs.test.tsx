@@ -3,7 +3,7 @@ import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import type { Plugin } from "@opencode/plugin/tui"
-import { busyCounts, busyTab, createComposerTabs } from "../../src/routes/session/composer/tabs"
+import { busyCounts, busyLabel, busyTab, createComposerTabs } from "../../src/routes/session/composer/tabs"
 
 async function setup(defaultTab?: string) {
   const [open, setOpen] = createSignal(false)
@@ -94,4 +94,10 @@ test("the picker opens on the first busy tab, else Subagents", () => {
   expect(busyTab(shell)).toBe("shell")
 
   expect(busyTab(counts([], []))).toBe("subagents")
+})
+
+test("busy label pluralizes each running kind and omits empty kinds", () => {
+  expect(busyLabel({ scripts: 1, subagents: 2, shells: 3 })).toBe("1 script · 2 subagents · 3 shells")
+  expect(busyLabel({ scripts: 0, subagents: 1, shells: 1 })).toBe("1 subagent · 1 shell")
+  expect(busyLabel({ scripts: 0, subagents: 0, shells: 0 })).toBe("")
 })

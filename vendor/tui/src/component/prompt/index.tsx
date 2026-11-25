@@ -9,7 +9,7 @@ import {
   stripAnsiSequences,
   type KeyEvent,
 } from "@opentui/core"
-import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match, For } from "solid-js"
+import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, For } from "solid-js"
 import path from "path"
 import { useLocal } from "../../context/local"
 import { useTheme, useThemes } from "../../context/theme"
@@ -18,7 +18,6 @@ import { createAnimatable, tween } from "../../ui/animation"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
-import { Spinner } from "../spinner"
 import { useClient } from "../../context/client"
 import { useRoute } from "../../context/route"
 import { usePromptRef } from "../../context/prompt"
@@ -56,8 +55,6 @@ import { useLocation } from "../../context/location"
 import { useArgs } from "../../context/args"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { useInteractivity } from "../../context/interactivity"
-import { abbreviateHome } from "../../runtime"
-import { Slot } from "../../plugin/render"
 import type { SessionInbox } from "@opencode/schema/session-inbox"
 import {
   deduplicatePromptImages,
@@ -67,10 +64,9 @@ import {
 import { DialogImagePreview } from "../dialog-image-preview"
 import { useDirectoryRecents } from "../../prompt/directory-recents"
 import { directoryRecentValue } from "../../prompt/directory-completion"
-import { useWorkingDirectoryActions } from "../../ui/working-directory-actions"
-import { truncateFilePath } from "../../ui/file-path"
 import { PromptMetadataRow } from "./metadata"
 import { limitLabel, useUsageLimits } from "../usage"
+import { contextUsage, formatContextUsage } from "../../util/session"
 
 export type PromptProps = {
   sessionID?: string
@@ -230,38 +226,13 @@ export function Prompt(props: PromptProps) {
     if (!selection) return
     return editorSelectionKey(selection) === dismissedEditorSelectionKey() ? undefined : selection
   })
-  const editorPath = createMemo(() => editorContext()?.filePath)
-  const editorSelectionLabel = createMemo(() => {
-    const ranges = editorContext()?.ranges
-    if (!ranges) return
-    const first = ranges.find(hasEditorRangeSelection) ?? ranges[0]
-    if (!first) return
-    return [getEditorRangeLabel(first), ranges.length > 1 ? `+${ranges.length - 1}` : undefined]
-      .filter(Boolean)
-      .join(" ")
-  })
-  const editorFileLabel = createMemo(() => {
-    const value = editorPath()
-    if (!value) return
-    const filename = path.basename(value)
-    const file = /^index\.[^./]+$/.test(filename)
-      ? [path.basename(path.dirname(value)), filename].filter(Boolean).join("/")
-      : filename
-    return `${file.split(path.sep).join("/")}${editorSelectionLabel() ?? ""}`
-  })
-  const editorFileLabelDisplay = createMemo(() => {
-    const file = editorFileLabel()
-    if (!file) return
-    return Locale.truncateMiddle(file, Math.max(12, Math.min(48, Math.floor(dimensions().width / 3))))
-  })
-  const editorContextLabelState = createMemo(() => editor.labelState())
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const move = usePromptMove({
     projectID: () =>
       (props.sessionID ? data.session.get(props.sessionID)?.projectID : undefined) ?? data.location.info()?.project.id,
     sessionID: () => props.sessionID,
   })
-  const [pendingDirectory, setPendingDirectory] = createSignal<string>()
+  const [, setPendingDirectory] = createSignal<string>()
   Keymap.createLayer(() => ({
     mode: "global",
     enabled: !disabled(),
@@ -1589,6 +1560,19 @@ export function Prompt(props: PromptProps) {
       .find((item) => item.providerID === selected?.providerID && item.id === selected?.modelID)
     return model ? limitLabel(limits.usage(model), model) : undefined
   })
+  // The context readout used to live in the separate footer row; it now rides at the right edge of the model row.
+  const contextMeter = createMemo(() => {
+    const sessionID = props.sessionID
+    if (!sessionID) return
+    const session = data.session.get(sessionID)
+    if (!session) return
+    const usage = contextUsage(
+      data.session.message.list(sessionID),
+      data.location.model.list(session.location),
+      session.revert?.messageID,
+    )
+    return usage ? formatContextUsage(usage.tokens, usage.percent) : undefined
+  })
   const highlight = createMemo(() => {
     if (muted()) return theme.border.base
     if (store.mode === "shell")
@@ -1612,12 +1596,6 @@ export function Prompt(props: PromptProps) {
     if (agentLabel()) revealedPromptMetadata.add(local)
   })
   const borderHighlight = createMemo(() => tint(theme.border.base, highlight(), agentMetaAlpha()))
-  const footerInput = () => ({
-    sessionID: props.sessionID,
-    mode: store.mode,
-    showDetails: store.interrupt === 0 || dimensions().width >= 80,
-  })
-
   const placeholderText = createMemo(() => {
     const value = (() => {
       if (store.mode === "shell") {
@@ -1631,33 +1609,6 @@ export function Prompt(props: PromptProps) {
     const width = dimensions().width < 44 ? dimensions().width - 5 : Math.min(75, dimensions().width - 4) - 5
     return Locale.takeWidth(value, Math.max(1, width)).trimEnd()
   })
-  const footerLocation = createMemo(() => {
-    if (!props.sessionID) {
-      // No session yet: show where the next session will be created.
-      return currentLocation.ref ?? data.location.default()
-    }
-    if (status() !== "idle") return
-    return data.session.get(props.sessionID)?.location
-  })
-  const locationLabel = createMemo(() => {
-    const pending = pendingDirectory()
-    const location = pending ? { directory: pending } : footerLocation()
-    if (!location) return
-    const directory = abbreviateHome(location.directory, paths.home)
-    const branch = data.location.vcs.info(location)?.branch.current
-    return branch ? `${directory}:${branch}` : directory
-  })
-  const [locationWidth, setLocationWidth] = createSignal(dimensions().width)
-  const locationLabelDisplay = createMemo(() => {
-    const label = locationLabel()
-    if (!label) return
-    return truncateFilePath(label, locationWidth())
-  })
-  const locationActions = useWorkingDirectoryActions({
-    directory: () => footerLocation()?.directory,
-    onMove: () => void move.open(),
-  })
-
   // The work scanner used to sit beside "esc interrupt". Its back-and-forth color trail now drives the
   // agent-colored rail, so the same motion marks working state without taking space in the status row.
   const workScannerWidth = 8
@@ -1881,6 +1832,9 @@ export function Prompt(props: PromptProps) {
                 variant={promptDisplay().variant}
                 speed={promptDisplay().speed}
                 limit={limit()}
+                context={store.mode === "normal" ? contextMeter() : undefined}
+                onModelClick={() => keymap.dispatch("model.list")}
+                onVariantClick={() => keymap.dispatch("variant.cycle")}
                 muted={!!muted()}
                 highlight={highlight()}
                 agentAlpha={agentMetaAlpha()}
@@ -1915,86 +1869,6 @@ export function Prompt(props: PromptProps) {
                   }
             }
           />
-        </box>
-        <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
-          <Slot path="prompt.footer" input={footerInput()}>
-            <Slot path="prompt.footer.status" input={footerInput()}>
-              <box
-                flexGrow={1}
-                flexShrink={1}
-                minWidth={0}
-                onSizeChange={function (this: BoxRenderable) {
-                  const width = this.width
-                  queueMicrotask(() => setLocationWidth(width))
-                }}
-              >
-                <Switch>
-                  <Match when={status() === "running"}>
-                    <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start" marginLeft={1}>
-                      <PromptInterruptStatus
-                        armed={store.interrupt > 0}
-                        animations={animationsEnabled()}
-                        text={theme.text.base}
-                        subdued={theme.text.muted}
-                        warning={theme.text.feedback.warning.base}
-                        flash={theme.decrease(theme.text.feedback.warning.base, 2)}
-                      />
-                    </box>
-                  </Match>
-                  <Match when={move.progress()}>
-                    {(progress) => (
-                      <box paddingLeft={3} height={1} minHeight={0} flexShrink={1}>
-                        <Spinner color={theme.hue.accent[500]}>
-                          {progress()}
-                          <span style={{ fg: theme.text.muted }}>{".".repeat(move.creatingDots())}</span>
-                        </Spinner>
-                      </box>
-                    )}
-                  </Match>
-                  <Match when={move.pendingNew()}>
-                    <box paddingLeft={3} height={1} minHeight={0} flexShrink={1}>
-                      <text fg={theme.hue.accent[500]} wrapMode="none" truncate>
-                        (new worktree)
-                      </text>
-                    </box>
-                  </Match>
-                  <Match when={true}>
-                    <Show when={locationLabelDisplay()} fallback={<text />}>
-                      {(location) => (
-                        <text
-                          id="prompt.footer.location"
-                          fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
-                          wrapMode="none"
-                          truncate
-                          flexGrow={1}
-                          flexShrink={1}
-                          onMouseOver={locationActions.onMouseOver}
-                          onMouseOut={locationActions.onMouseOut}
-                          onMouseUp={locationActions.onMouseUp}
-                        >
-                          {location()}
-                        </text>
-                      )}
-                    </Show>
-                  </Match>
-                </Switch>
-              </box>
-            </Slot>
-            <Slot path="prompt.footer.file" input={footerInput()}>
-              <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
-                {(file) => (
-                  <text
-                    wrapMode="none"
-                    truncate
-                    flexShrink={1}
-                    fg={editorContextLabelState() === "pending" ? theme.hue.accent[500] : theme.text.muted}
-                  >
-                    {file()}
-                  </text>
-                )}
-              </Show>
-            </Slot>
-          </Slot>
         </box>
       </box>
       <Autocomplete
