@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "bun run src/main.tsx",
     "start": "bun run src/main.tsx",
+    "link:cli": "bun link",
     "format": "bun fmt --no-script",
     "format:check": "bun fmt --no-script --check",
     "lint:check": "oxlint --max-warnings 0 src scripts",

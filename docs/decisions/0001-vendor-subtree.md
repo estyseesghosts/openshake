@@ -15,12 +15,12 @@ Fork the OpenCode TUI frontend without carrying the rest of the monorepo into th
 
 ## Decision
 
-Option 4. One subtree under `vendor/` holds the frontend and the two private builtin renderer packages. A local `vendor-source` branch holds successive snapshots built with `git archive` from an upstream ref; `git subtree merge --prefix=vendor <snapshot> --squash` applies them. This keeps upstream history out of the repo entirely — `git subtree split` would have to walk ~23k commits for each package — while preserving a clean subtree root and a repeatable update path. First-party host code stays in `src/`, and a Bun module-alias plugin resolves the two private package specifiers to their vendored sources (`tsconfig` paths alone do not cross the nested package boundary).
+Option 4 with three branches. One subtree under `vendor/` holds the frontend and the two private builtin renderer packages. `vendor-source` holds pristine snapshots built with `git archive` from an upstream ref; `tui-fork` holds those snapshots plus every OpenShake change to vendored code as ordinary commits; `git subtree merge --prefix=vendor tui-fork --squash` applies the result to `main`. `bun run vendor:sync <ref>` performs all three steps and aborts cleanly if the fork rebase conflicts. This keeps upstream history out of the repo entirely — `git subtree split` would have to walk ~23k commits for each package — while concentrating upstream conflicts in one reviewable branch and keeping `main`'s `vendor/` a clean subtree. First-party host code stays in `src/`, and a Bun module-alias plugin resolves the two private package specifiers to their vendored sources (`tsconfig` paths alone do not cross the nested package boundary).
 
 ## Tradeoffs
 
 - Snapshots are coarse: intermediate upstream commits between syncs are not visible in the subtree.
-- Conflicts in `vendor/` must be resolved locally; first-party code should avoid editing vendored files so syncs stay clean.
+- Conflicts on an upstream bump are resolved by rebasing `tui-fork` onto the new `vendor-source` snapshot; vendored files are never hand-edited on `main`.
 - All `@opencode/*` npm dependencies and the server must stay version-aligned with the vendored source; a version bump requires a coordinated sync.
 
 ## Revisit if

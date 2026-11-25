@@ -4,8 +4,8 @@ Follow `../typescript-style-guide.md` for all first-party code in `src/` and `sc
 
 ## Boundaries
 
-- `vendor/` is upstream code managed by git subtree. Do not edit it by hand; change `src/` instead, or sync with `bun run vendor:sync <ref>` and resolve conflicts in the subtree.
-- Keep TUI source changes in a dedicated upstream patch/PR when they belong upstream. Local behavior that is OpenShake-specific belongs in `src/backend.ts`, `src/config.ts`, or `src/main.tsx`.
+- `vendor/` is upstream code managed by git subtree. Never hand-edit it on `main`: make vendored changes as commits on `tui-fork`, then subtree-merge `tui-fork` into `main`. Sync with `bun run vendor:sync <ref>`, which updates the pristine `vendor-source` snapshot, rebases `tui-fork`, and performs the subtree merge.
+- First-party host behavior (backend resolution, config persistence, CLI) belongs in `src/backend.ts`, `src/config.ts`, or `src/main.tsx` and is committed directly on `main`. OpenShake-specific TUI/client behavior is committed on `tui-fork`; changes that belong upstream should also start there so they can be extracted as a patch/PR.
 - The vendored TUI uses no semicolons, double quotes, and 120-column lines, so `bunfig.toml` uses that style and excludes `vendor/` from format/lint. Do not reformat vendored files.
 
 ## Version lockstep
