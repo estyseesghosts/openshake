@@ -13,6 +13,7 @@ import { summarizeActivity } from "./activity-summary"
 import {
   mediumActivitySummary,
   mediumEditCounts,
+  mediumEditFileCount,
   mediumEditsSummary,
   mediumLiveLine,
 } from "./medium-activity-summary"
@@ -267,7 +268,9 @@ function MediumGroup(props: GroupProps) {
     }),
   )
   const edits = () => props.node.kind === "medium-edits"
-  const actions = createMemo(() => parts().map((part) => ({ name: part.name })))
+  const actions = createMemo(() =>
+    parts().map((part) => ({ name: part.name, ...(edits() ? { files: mediumEditFileCount(part) } : {}) })),
+  )
   const counts = createMemo(() =>
     edits()
       ? parts().reduce(
