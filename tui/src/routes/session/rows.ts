@@ -8,7 +8,6 @@ import {
   append,
   completePrevious,
   groupRefs,
-  hasPart,
   messagePath,
   partitionPending,
   partPath,
@@ -22,6 +21,7 @@ import {
   defaultVerbosity,
 } from "./grouping/session"
 import { groupID } from "./anchors"
+import { PartIndex } from "./rows-index"
 export type { CacheUsage, PartRef, SessionRow } from "./grouping/session"
 
 /**
@@ -53,6 +53,7 @@ export function createSessionRows(
   const client = useClient()
   const config = useConfig()
   const [rows, setRows] = createStore<(SessionRow & { key?: string })[]>([])
+  const partIndex = new PartIndex()
   const revertBoundary = () => data.session.get(sessionID())?.revert?.messageID
   const turnTokens = () => Boolean(config.data.debug?.turn_tokens)
   const verbosity = () => config.data.session?.verbosity ?? defaultVerbosity
@@ -101,6 +102,9 @@ export function createSessionRows(
         { key: "key" },
       ),
     )
+    // Rebuild the derived indexes in the same turn as the projection so they can
+    // never describe a different set of rows after a prepend, revert or verbosity change.
+    partIndex.rebuild(rows)
   }
 
   function pendingPermissions() {
@@ -202,23 +206,43 @@ export function createSessionRows(
       }),
     )
 
-  const appendPart = (ref: PartRef, part: AppendPart) =>
+  // Reasoning completion is a rare terminal event; the owner index keeps it off the
+  // hot delta path while still closing the correct group.
+  const completeReasoning = (ref: PartRef) => {
+    const key = partIndex.owner(ref)
+    if (!key) return
     setRows(
       produce((draft) => {
-        if (!hasPart(draft, ref)) {
-          append(draft, ref, part, queuedStart(draft), verbosity())
-          return
-        }
-        if (part.type !== "reasoning" || part.time?.completed === undefined) return
-        const row = draft.find(
-          (row) =>
-            row.type === "group" &&
-            row.kind === "reasoning" &&
-            groupRefs(row).some((item) => item.messageID === ref.messageID && item.partID === ref.partID),
-        )
-        if (row?.type === "group" && row.kind === "reasoning") row.completed = true
+        const row = draft.find((item) => item.type === "group" && item.key === key)
+        if (row?.type === "group") row.completed = true
       }),
     )
+  }
+
+  const appendPart = (ref: PartRef, part: AppendPart) => {
+    // Every subsequent delta for an already materialized part exits here without
+    // touching the Solid store at all.
+    partIndex.materialize(ref, () => {
+      setRows(
+        produce((draft) => {
+          append(draft, ref, part, queuedStart(draft), verbosity())
+          if (part.type === "reasoning") {
+            const group = draft.find(
+              (row) =>
+                row.type === "group" &&
+                row.kind === "reasoning" &&
+                groupRefs(row, true).some((item) => item.messageID === ref.messageID && item.partID === ref.partID),
+            )
+            if (group?.type === "group") {
+              group.key = groupID(group, 0)
+              partIndex.setOwner(ref, group.key)
+            }
+          }
+        }),
+      )
+    })
+    if (part.type === "reasoning" && part.time?.completed !== undefined) completeReasoning(ref)
+  }
 
   const appendFooter = (messageID: string) =>
     setRows(
