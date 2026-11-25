@@ -180,8 +180,12 @@ export function Session(props: {
   const promptRef = usePromptRef()
   const session = createMemo(() => data.session.get(route.sessionID))
   const messages = () => data.session.message.list(route.sessionID)
-  const messageIndexes = createMemo(() => new Map(messages().map((message, index) => [message.id, index])))
-  const legacy = createMemo(() => SessionTurn.legacy(messages()))
+  // Reuse the client's incrementally maintained index instead of rebuilding a full
+  // map in the route on every message publication.
+  const messageIndex = (messageID: string) => data.session.message.indexOf(route.sessionID, messageID)
+  const legacy = createMemo(() =>
+    data.session.idle.has(route.sessionID) ? false : SessionTurn.legacy(messages()),
+  )
   const messagesBeforeRevert = () => {
     const messageID = session()?.revert?.messageID
     if (!messageID) return messages()
@@ -1514,7 +1518,7 @@ export function Session(props: {
         groupExploration,
         diffWrapMode,
         models,
-        messageIndex: (messageID) => messageIndexes().get(messageID),
+        messageIndex,
         legacyTurns: legacy,
         config,
         mutatePending,
