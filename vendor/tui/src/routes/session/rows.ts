@@ -304,6 +304,12 @@ export function createSessionRows(
           { type: "tool", name: event.data.name },
         )
     }),
+    // A tool admitted to a medium group at input-start can fail later. Re-project
+    // that run once on the terminal failure so the failed call leaves the collapsed
+    // group and stays individually reachable with its error and input intact.
+    data.on("session.tool.failed", (event) => {
+      if (event.data.sessionID === sessionID() && verbosity() === "medium") rebuild()
+    }),
     data.on("session.retry.scheduled", (event) => {
       if (event.data.sessionID === sessionID()) appendFooter(event.data.assistantMessageID)
     }),

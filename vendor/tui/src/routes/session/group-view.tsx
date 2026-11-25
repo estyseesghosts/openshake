@@ -10,6 +10,12 @@ import { EntryAnchor, GroupAnchor, visitEntries } from "./anchor-view"
 import { groupID } from "./anchors"
 import { instructionPaths, type PartRef, type SessionEntry, type SessionGroup, type SessionNode } from "./grouping/session"
 import { summarizeActivity } from "./activity-summary"
+import {
+  mediumActivitySummary,
+  mediumEditCounts,
+  mediumEditsSummary,
+  mediumLiveLine,
+} from "./medium-activity-summary"
 import { InlineToolRow, ReasoningBody, reasoningContent, toolDisplay } from "./message-parts"
 import { use } from "./render-context"
 import { resolvePart } from "./rows"
@@ -36,7 +42,14 @@ export function SessionGroupView(props: Renderers & { row: SessionGroup }) {
       node={props.row}
       level={0}
       completed={props.row.completed}
-      pending={props.row.kind === "exploration" || props.row.kind === "activity" ? props.row.pending : []}
+      pending={
+        props.row.kind === "exploration" ||
+        props.row.kind === "activity" ||
+        props.row.kind === "medium-activity" ||
+        props.row.kind === "medium-edits"
+          ? props.row.pending
+          : []
+      }
     />
   )
 }
@@ -49,6 +62,9 @@ function Group(props: GroupProps) {
         <Switch fallback={<GroupContent {...props} />}>
           <Match when={kind === "activity"}>
             <ActivityGroup {...props} />
+          </Match>
+          <Match when={kind === "medium-activity" || kind === "medium-edits"}>
+            <MediumGroup {...props} />
           </Match>
           <Match when={kind === "instructions"}>
             <InstructionsGroup {...props} />
@@ -224,6 +240,95 @@ function ActivityGroup(props: GroupProps) {
             <Children {...props} nodes={props.node.children} mode="normal" />
           </box>
         </Show>
+      </Show>
+      <PendingEntries {...props} entries={entries()} />
+    </GroupAnchor>
+  )
+}
+
+/**
+ * Medium verbosity: a group is transparent while it holds one tool, so a lone read
+ * or a singleton edit keeps its full renderer. Once repetition starts, the children
+ * collapse into one semantic summary. Keeping the group in the projection makes the
+ * live one-to-two transition a renderer change with stable disclosure IDs.
+ */
+function MediumGroup(props: GroupProps) {
+  const theme = useTheme()
+  const disclosure = useDisclosure(props)
+  const [hover, setHover] = createSignal(false)
+  const entries = createMemo(() => descendants(props.node))
+  const parts = createMemo(() =>
+    entries().flatMap((entry) => {
+      if (entry.type !== "part" || isPending(entry, props.pending)) return []
+      const message = props.message(entry.ref.messageID)
+      if (message?.type !== "assistant") return []
+      const part = resolvePart(message, entry.ref.partID)
+      return part?.type === "tool" ? [part] : []
+    }),
+  )
+  const edits = () => props.node.kind === "medium-edits"
+  const actions = createMemo(() => parts().map((part) => ({ name: part.name })))
+  const counts = createMemo(() =>
+    edits()
+      ? parts().reduce(
+          (total, part) => {
+            const next = mediumEditCounts(part)
+            return { additions: total.additions + next.additions, deletions: total.deletions + next.deletions }
+          },
+          { additions: 0, deletions: 0 },
+        )
+      : { additions: 0, deletions: 0 },
+  )
+  const label = createMemo(() =>
+    edits()
+      ? mediumEditsSummary(actions(), counts().additions, counts().deletions)
+      : mediumActivitySummary(actions()),
+  )
+  const completed = () =>
+    props.completed || (parts().length > 0 && parts().every((part) => part.time.completed !== undefined))
+  // Only a genuinely running child produces the bounded identity line, and only
+  // while the group is collapsed. Completed groups never show a stale "Running" line.
+  const running = createMemo(() => {
+    if (disclosure.expanded() || completed()) return ""
+    const active = parts().filter(
+      (part) => part.state.status === "running" || part.state.status === "streaming",
+    )
+    const newest = active.at(-1)
+    return newest ? mediumLiveLine(newest) : ""
+  })
+
+  if (props.node.size === 1) {
+    return (
+      <>
+        <Children {...props} nodes={props.node.children} mode="normal" />
+        <PendingEntries {...props} entries={entries()} />
+      </>
+    )
+  }
+
+  return (
+    <GroupAnchor groupID={disclosure.id()} active={running() !== ""}>
+      <InlineToolRow
+        icon={disclosure.expanded() ? "−" : "+"}
+        color={hover() ? theme.text.base : theme.text.muted}
+        complete={completed()}
+        pending={label()}
+        spinner={!completed()}
+        onMouseOver={() => setHover(true)}
+        onMouseOut={() => setHover(false)}
+        onMouseUp={(event) => disclosure.toggle(event.currentTarget)}
+      >
+        {label()}
+      </InlineToolRow>
+      <Show when={running()}>
+        <box marginLeft={3}>
+          <text fg={theme.text.muted}>└ {running()}</text>
+        </box>
+      </Show>
+      <Show when={disclosure.expanded()}>
+        <box flexDirection="column" gap={1} marginTop={1}>
+          <Children {...props} nodes={props.node.children} mode="tool" />
+        </box>
       </Show>
       <PendingEntries {...props} entries={entries()} />
     </GroupAnchor>
