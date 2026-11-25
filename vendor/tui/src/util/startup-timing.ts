@@ -1,4 +1,4 @@
-export const startupMarks = ["entry", "renderer", "first-frame", "session-usable", "plugins-settled"] as const
+export const startupMarks = ["entry", "location", "renderer", "first-frame", "session-usable", "plugins-settled"] as const
 export type StartupMark = (typeof startupMarks)[number]
 
 export type StartupSnapshot = {

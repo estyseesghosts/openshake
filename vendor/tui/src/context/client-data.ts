@@ -57,9 +57,10 @@ import { createStore, produce, reconcile } from "solid-js/store"
 import type { SessionInbox } from "@opencode/schema/session-inbox"
 import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { StreamCoalescer, type StreamEntry } from "./stream-coalescer"
-import { MessageWindow } from "./message-window"
+import { MessageWindow, type FetchedPage } from "./message-window"
 import { collectPages } from "./session-pages"
 import { IdleMarkerIndex } from "./idle-markers"
+import type { MediaCache } from "../util/media"
 
 export type DataSessionStatus = "idle" | "running"
 /**
@@ -95,10 +96,12 @@ export type CreateDataInput = {
   readonly omitToolFileData?: boolean | (() => boolean)
   /**
    * Injection point for the streaming publication cadence. Defaults to a microtask;
-   * a TUI can schedule approximately one publication per render frame. Lifecycle
-   * events always flush synchronously regardless of this scheduler.
+   * a TUI can schedule approximately one publication per render frame. Terminal
+   * events flush their own part/message/session synchronously regardless of it.
    */
   readonly flushStream?: (flush: () => void) => void
+  /** Moves live inline image/file bytes into a bounded blob cache, leaving refs in the transcript. */
+  readonly media?: MediaCache
 }
 
 const messagePageLimit = 20
@@ -207,6 +210,29 @@ const hasFileData = (part: Extract<SessionMessageInfo, { type: "assistant" }>["c
   part.type === "tool" &&
   "content" in part.state &&
   !!part.state.content?.some((item) => item.type === "file" && item.uri.startsWith("data:"))
+
+// Move live inline file bytes into the bounded blob pool and leave a lightweight ref
+// in the transcript. Equal payloads share one hash, so a screenshot is never held in
+// both the transcript and the media cache.
+function liveFileRefs(
+  content: [ToolContent, ...ToolContent[]],
+  media: MediaCache | undefined,
+): [ToolContent, ...ToolContent[]] {
+  if (!media) return [...content]
+  return content.map((item) => {
+    if (item.type !== "file" || !item.uri.startsWith("data:")) return item
+    const comma = item.uri.indexOf(",")
+    if (comma < 0) return item
+    try {
+      const binary = atob(item.uri.slice(comma + 1))
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+      return { ...item, uri: media.register(item.uri, bytes) }
+    } catch {
+      return item
+    }
+  }) as [ToolContent, ...ToolContent[]]
+}
 
 // A tool file whose `data:` payload `omitFileData` emptied.
 const isDroppedFile = (item: ToolContent) => item.type === "file" && item.uri === `data:${item.mime};base64,`
@@ -617,6 +643,7 @@ export function createData(config: CreateDataInput) {
         index.delete(inboxID)
         message.reindex(draft, index, position)
       })
+      idleMarkers.remove(sessionID, inboxID)
     })
   }
 
@@ -629,6 +656,7 @@ export function createData(config: CreateDataInput) {
           fn((draft[sessionID] ??= []), index(sessionID))
         }),
       )
+      commitMessages(sessionID)
     },
     append(messages: SessionMessageInfo[], index: Map<string, number>, item: SessionMessageInfo) {
       if (index.has(item.id)) return
@@ -721,12 +749,17 @@ export function createData(config: CreateDataInput) {
   }
   const stream = new StreamCoalescer(applyStream, config.flushStream)
 
+  // One publication step: the store commits reactive message objects, then the
+  // window adopts that array as authoritative and derives the O(1) index and byte
+  // accounting from it. Neither side keeps an independent copy of the transcript.
+  function commitMessages(sessionID: string) {
+    const view = messageWindow.adopt(sessionID, store.session.message[sessionID] ?? [])
+    messageIndex.set(sessionID, view.index)
+    return view
+  }
+
   function index(sessionID: string) {
-    const existing = messageIndex.get(sessionID)
-    if (existing) return existing
-    const created = new Map<string, number>()
-    messageIndex.set(sessionID, created)
-    return created
+    return messageWindow.index(sessionID)
   }
 
   // Every direct subagent, not only the server's default first page, so a root's family cost
@@ -792,10 +825,8 @@ export function createData(config: CreateDataInput) {
     // Keep unacknowledged submissions until their echo or rollback settles them.
     const pending = store.session.pending[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
     const messages = store.session.message[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
-    messageIndex.delete(sessionID)
     messageWindow.forget(sessionID)
     idleMarkers.observe(sessionID, messages)
-    if (messages.length) messageIndex.set(sessionID, new Map(messages.map((item, index) => [item.id, index])))
     setStore(
       "session",
       produce((draft) => {
@@ -807,6 +838,12 @@ export function createData(config: CreateDataInput) {
         if (pending.length) draft.pending[sessionID] = pending
       }),
     )
+    if (messages.length) {
+      messageWindow.set(sessionID, messages, undefined)
+      commitMessages(sessionID)
+    } else {
+      messageIndex.delete(sessionID)
+    }
   }
 
   let deletionEpoch = 0
@@ -844,6 +881,8 @@ export function createData(config: CreateDataInput) {
     removeJobTree(sessionID)
     store.session.pending[sessionID]?.forEach((item) => outbox.delete(item.id))
     messageIndex.delete(sessionID)
+    messageWindow.forget(sessionID)
+    idleMarkers.forget(sessionID)
     anchored.delete(sessionID)
     stranded.delete(sessionID)
     sync.invalidate(`session:${sessionID}`)
@@ -872,16 +911,52 @@ export function createData(config: CreateDataInput) {
     )
   }
 
+  // Flush only the scope a lifecycle event can change. Unrelated streams keep frame
+  // batching, so lifecycle traffic in one session cannot publish another's deltas.
+  function flushBefore(event: OpenCodeEvent) {
+    switch (event.type) {
+      case "session.text.delta":
+      case "session.reasoning.delta":
+      case "session.tool.input.delta":
+      case "session.tool.progress":
+        return
+      case "session.text.ended":
+        stream.flushPart(event.data.sessionID, event.data.assistantMessageID, "text")
+        return
+      case "session.reasoning.ended":
+        stream.flushPart(event.data.sessionID, event.data.assistantMessageID, "reasoning")
+        return
+      case "session.tool.input.ended":
+      case "session.tool.called":
+      case "session.tool.success":
+      case "session.tool.failed":
+        stream.flushPart(event.data.sessionID, event.data.assistantMessageID, event.data.id)
+        return
+      case "session.step.started":
+      case "session.step.ended":
+      case "session.step.failed":
+      case "session.step.streamed":
+      case "session.step.first-token":
+        stream.flushMessage(event.data.sessionID, event.data.assistantMessageID)
+        return
+      case "session.execution.started":
+      case "session.execution.succeeded":
+      case "session.execution.failed":
+      case "session.execution.interrupted":
+      case "session.compaction.started":
+      case "session.compaction.ended":
+      case "session.compaction.failed":
+        stream.flushSession(event.data.sessionID)
+        return
+      case "server.connected":
+        // Reconnect is the only true global barrier: a new event generation starts.
+        stream.flush()
+        return
+    }
+  }
+
   function handleEvent(event: OpenCodeEvent) {
-    // Every lifecycle, terminal and reconnect event flushes buffered content first,
-    // so an `*.ended` payload or a failure always wins over intermediate deltas.
-    if (
-      event.type !== "session.text.delta" &&
-      event.type !== "session.reasoning.delta" &&
-      event.type !== "session.tool.input.delta" &&
-      event.type !== "session.tool.progress"
-    )
-      stream.flush()
+    flushBefore(event)
     switch (event.type) {
       case "server.connected": {
         const updates = new Map<string, DataSessionStatus | undefined>()
@@ -1306,7 +1381,7 @@ export function createData(config: CreateDataInput) {
             status: "completed",
             input: tool.state.input,
             metadata: event.data.metadata,
-            content: omitFiles() ? omitFileData(event.data.content) : [...event.data.content],
+            content: omitFiles() ? omitFileData(event.data.content) : liveFileRefs(event.data.content, config.media),
           }
           tool.executed = event.data.executed || tool.executed === true
           if (event.data.native) tool.native = { ...tool.native, ...event.data.native }
@@ -1440,7 +1515,10 @@ export function createData(config: CreateDataInput) {
         message.update(event.data.sessionID, (draft, index) => {
           const position = draft.findIndex((item) => item.id >= event.data.to)
           if (position === -1) return
-          for (const item of draft.splice(position)) index.delete(item.id)
+          for (const item of draft.splice(position)) {
+            index.delete(item.id)
+            idleMarkers.remove(event.data.sessionID, item.id)
+          }
         })
         return
       case "session.compaction.delta":
@@ -1735,6 +1813,21 @@ export function createData(config: CreateDataInput) {
   const result = {
     on: config.event.on,
     listen: config.event.listen,
+    /** Resident-byte instrumentation: transcript, server media and live blobs are reported separately. */
+    residentBytes() {
+      const transcript = messageWindow.stats()
+      const media = config.media?.stats()
+      return {
+        transcript: transcript.bytes,
+        messages: transcript.messages,
+        pages: transcript.pages,
+        oversized: transcript.oversized,
+        media: media?.bytes ?? 0,
+        liveBlobs: media?.localBytes ?? 0,
+        serverMedia: media?.remoteBytes ?? 0,
+        perSession: (sessionID: string) => messageWindow.residentBytes(sessionID),
+      }
+    },
     session: {
       list() {
         return sessions()
@@ -2190,7 +2283,25 @@ export function createData(config: CreateDataInput) {
               anchored.add(sessionID)
               stranded.delete(sessionID)
               const cursor = pages.at(-1)?.cursor.next ?? undefined
-              messageWindow.set(sessionID, messages, cursor)
+              // Keep each server read as its own page. An evicted page stays
+              // refetchable through the cursor that produced it, never cut in the middle.
+              const keptIDs = new Set((kept ?? []).map((item) => item.id))
+              const keptPages = messageWindow
+                .pages(sessionID)
+                .filter((page) => page.messages.every((item) => keptIDs.has(item.id)))
+              // API pages arrive newest first; the window stores pages oldest first.
+              const fetchedPages: FetchedPage[] = pages.toReversed().map((page, at) => {
+                const fetchedAt = pages.length - 1 - at
+                return {
+                  messages: page.data.toReversed().map(stored),
+                  refetchCursor: fetchedAt === 0 ? undefined : (pages[fetchedAt - 1]?.cursor.next ?? undefined),
+                }
+              })
+              // Local outbox/admitted rows are not history; they belong to the live tail.
+              const newest = fetchedPages.at(-1)
+              if (newest) newest.messages = [...newest.messages, ...local]
+              else fetchedPages.push({ messages: local })
+              messageWindow.set(sessionID, messages, cursor, [...keptPages, ...fetchedPages])
               const bounded = messageWindow.trim(sessionID, pinnedFor(sessionID), false)
               messageIndex.set(sessionID, messageWindow.index(sessionID))
               idleMarkers.observe(sessionID, bounded.messages)
@@ -2198,6 +2309,7 @@ export function createData(config: CreateDataInput) {
               // Kept pages keep the cursor to the page before them; an evicted page
               // is refetchable through its own cursor.
               setStore("session", "messageCursor", sessionID, bounded.cursor)
+              commitMessages(sessionID)
             })
           })
         },
@@ -2259,17 +2371,16 @@ export function createData(config: CreateDataInput) {
             const existing = store.session.message[sessionID] ?? []
             const ids = new Set(existing.map((item) => item.id))
             const added = fetched.reverse().filter((item) => !ids.has(item.id))
-            const messages = [...added, ...existing]
             batch(() => {
               options?.beforePublish?.()
               // Keep the server page boundary and its cursor; a whole old page may be
               // evicted later but is always refetchable. Never trim inside a page.
               messageWindow.prepend(sessionID, added, cursor, next)
               const bounded = messageWindow.trim(sessionID, pinnedFor(sessionID), Boolean(options?.all))
-              messageIndex.set(sessionID, messageWindow.index(sessionID))
               idleMarkers.observe(sessionID, bounded.messages)
               setStore("session", "message", sessionID, reconcile(bounded.messages))
               setStore("session", "messageCursor", sessionID, bounded.cursor)
+              commitMessages(sessionID)
             })
             return true
           })()
