@@ -1,12 +1,13 @@
-// OpenShake launch wordmark. Lowercase block letters: s/a/e are five cells tall,
-// h/k are six; every glyph is exactly four cells wide with one cell of spacing.
+// OpenShake launch wordmark. Lowercase glyphs are four cells wide and five cells
+// tall; h and k rise to seven cells at their peaks. One cell separates letters.
 export const logo = [
   "     █         █        ",
-  "████ █     ██  █    ████",
-  "█    ███  █  █ █ █  █   ",
-  "████ █  █ ████ ██   ███ ",
+  "     █         █        ",
+  "████ ████ ████ █  █ ████",
+  "█    █  █    █ █ █  █  █",
+  "████ █  █  ███ ██   ████",
   "   █ █  █ █  █ █ █  █   ",
-  "████ █  █ █  █ █  █ ████",
+  "████ █  █ ████ █  █ ████",
 ]
 
 export const go = {
