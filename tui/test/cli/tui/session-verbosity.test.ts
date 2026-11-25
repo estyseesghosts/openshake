@@ -10,6 +10,7 @@ import {
   type SessionRow,
 } from "../../../src/routes/session/grouping/session"
 import { reduceSessionRows } from "../../../src/routes/session/rows"
+import { mediumActivitySummary, mediumEditsSummary } from "../../../src/routes/session/medium-activity-summary"
 
 const model = { id: "model", providerID: "provider" }
 const tool = (
@@ -383,28 +384,24 @@ test("medium failed tools leave their group and stay standalone", () => {
 })
 
 test("medium hydration and live append converge on the same projected tree", () => {
-  const hydrated = reduceSessionRows(
-    [
-      assistant("a", [
-        { type: "text", text: "Now looking" },
-        tool("r1", "read"),
-        tool("r2", "read"),
-        tool("g1", "grep"),
-        tool("s1", "shell"),
-        tool("s2", "bash"),
-        tool("e1", "edit"),
-        tool("r3", "read"),
-        tool("e2", "edit"),
-        tool("w1", "write"),
-        tool("bad", "read", "error"),
-        tool("q", "question"),
-        { type: "text", text: "Done" },
-      ]),
-    ],
-    new Set(),
-    false,
-    "medium",
-  )
+  // Prose in the middle of a tool run must break grouping rather than be swallowed.
+  const message = assistant("a", [
+    { type: "text", text: "Now looking" },
+    tool("r1", "read"),
+    tool("r2", "read"),
+    tool("g1", "grep"),
+    tool("s1", "shell"),
+    tool("s2", "bash"),
+    { type: "text", text: "Mid-flight note" },
+    tool("e1", "edit"),
+    tool("r3", "read"),
+    tool("e2", "edit"),
+    tool("w1", "write"),
+    tool("bad", "read", "error"),
+    tool("q", "question"),
+    { type: "text", text: "Done" },
+  ])
+  const hydrated = reduceSessionRows([message], new Set(), false, "medium")
   const live: SessionRow[] = []
   const add = (partID: string, part: Parameters<typeof append>[2]) =>
     append(live, { messageID: "a", partID }, part, live.length, "medium")
@@ -412,19 +409,21 @@ test("medium hydration and live append converge on the same projected tree", () 
   for (const id of ["r1", "r2", "g1"]) add(id, { type: "tool", name: id === "g1" ? "grep" : "read" })
   add("s1", { type: "tool", name: "shell" })
   add("s2", { type: "tool", name: "bash" })
+  add("text:1", { type: "text" })
   add("e1", { type: "tool", name: "edit" })
   add("r3", { type: "tool", name: "read" })
   add("e2", { type: "tool", name: "edit" })
   add("w1", { type: "tool", name: "write" })
   add("bad", { type: "tool", name: "read", error: true })
   add("q", { type: "tool", name: "question" })
-  add("text:1", { type: "text" })
+  add("text:2", { type: "text" })
 
   const shape = (rows: SessionRow[]) =>
     rows.map((row) => (row.type === "group" ? `${row.kind}:${row.size}` : row.type))
   expect(shape(hydrated)).toEqual([
     "part",
     "medium-activity:5",
+    "part",
     "medium-edits:1",
     "medium-activity:1",
     "medium-edits:2",
@@ -433,6 +432,23 @@ test("medium hydration and live append converge on the same projected tree", () 
     "part",
   ])
   expect(shape(live)).toEqual(shape(hydrated))
+
+  // The group headers are derived from these labels; assert them explicitly so a
+  // summary regression cannot hide behind an unchanged row shape.
+  const label = (row: SessionRow) => {
+    if (row.type !== "group") return ""
+    const actions = groupRefs(row, true).flatMap((ref) => {
+      const part = message.content.find((item) => item.type === "tool" && item.id === ref.partID)
+      return part?.type === "tool" ? [{ name: part.name }] : []
+    })
+    return row.kind === "medium-edits" ? mediumEditsSummary(actions) : mediumActivitySummary(actions)
+  }
+  expect(hydrated.filter((row) => row.type === "group").map(label)).toEqual([
+    "Read 2 files, searched 1 time, ran 2 commands",
+    "Edited 1 file",
+    "Read 1 file",
+    "Edited 2 files",
+  ])
 })
 
 test("a running script's changes fold into its activity at low and show under it at medium and high", () => {

@@ -1,7 +1,7 @@
 import type { SessionMessageAssistantTool } from "@opencode/client"
 import { canonicalToolName, executeCalls, finiteNumber, type ExecuteCall } from "../../util/tool-display"
 
-export type MediumAction = { name: string }
+export type MediumAction = { name: string; /** Files changed by one tool call; apply_patch may span several. */ files?: number }
 
 type Phrase = { verb: string; noun: (count: number) => string; count: number }
 
@@ -34,7 +34,9 @@ function phrases(actions: readonly MediumAction[], table: Record<string, Omit<Ph
       byVerb.set(template.verb, phrase)
       result.push(phrase)
     }
-    phrase.count++
+    // One apply_patch call can change several files, so a tool call is not a file.
+    const files = action.files
+    phrase.count += typeof files === "number" && Number.isFinite(files) && files > 0 ? Math.floor(files) : 1
   })
   return result
 }
@@ -73,20 +75,27 @@ export function mediumExecuteFailed(part: SessionMessageAssistantTool) {
   return executeCalls(metadata?.toolCalls).some((call) => call.status === "error")
 }
 
-/** Reuse the addition/deletion counts OpenCode already parsed rather than reparsing patches. */
-export function mediumEditCounts(part: SessionMessageAssistantTool) {
+function editFiles(part: SessionMessageAssistantTool): readonly unknown[] {
   const metadata =
     part.state.status === "streaming" || part.state.status === "running" ? undefined : part.state.metadata
   const files = record(metadata)?.files
+  return Array.isArray(files) ? files : []
+}
+
+/** A single apply_patch call may list many files; fall back to one file when metadata is absent. */
+export function mediumEditFileCount(part: SessionMessageAssistantTool) {
+  return Math.max(1, editFiles(part).length)
+}
+
+/** Reuse the addition/deletion counts OpenCode already parsed rather than reparsing patches. */
+export function mediumEditCounts(part: SessionMessageAssistantTool) {
   let additions = 0
   let deletions = 0
-  if (Array.isArray(files)) {
-    files.forEach((file) => {
-      const item = record(file)
-      additions += finiteNumber(item?.additions) ?? 0
-      deletions += finiteNumber(item?.deletions) ?? 0
-    })
-  }
+  editFiles(part).forEach((file) => {
+    const item = record(file)
+    additions += finiteNumber(item?.additions) ?? 0
+    deletions += finiteNumber(item?.deletions) ?? 0
+  })
   return { additions, deletions }
 }
 
