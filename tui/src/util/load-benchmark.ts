@@ -6,6 +6,8 @@ import { PartIndex } from "../routes/session/rows-index"
 import { createMediaCache } from "./media"
 import { splitLargePatch } from "./diff"
 import { highlightBudgetExceeded } from "./diff-highlight"
+import { exerciseRealDataPath, type RealPathCounters } from "./load-data-path"
+import { renderGiantDiff, type DiffRenderStats } from "./load-diff-render"
 
 export type LoadScale = {
   sessions: number
@@ -133,6 +135,10 @@ export type BenchmarkReport = {
   residentBytesBySession: ReadonlyMap<string, number>
   /** Chunk count of the giant modified-file diff that was actually partitioned. */
   diffChunks: number
+  /** Real createData event handling, retention and row projection counters. */
+  realPath: RealPathCounters
+  /** The giant diff was mounted and rendered through PatchDiff, not just partitioned. */
+  diffRender: DiffRenderStats
   /** Present only with `realFrames: true`; wall-clock data is never asserted in CI. */
   frameTimings?: FrameTimings
 }
@@ -273,11 +279,33 @@ export async function runLoadBenchmark(
   const resident = windows.get(primary)?.trim(primary, new Set(), false, defaultWindowBudgets)
   trackResident()
 
-  // Exercise the real large-modified-file path on the generated giant diff: the
-  // patch must be partitioned before any chunk is rendered, never one huge renderable.
-  const patch = `--- a/giant.ts\n+++ b/giant.ts\n@@ -1,0 +1,${scale.diffLines} @@\n${fixture.diff}\n`
+  // Exercise the real large-modified-file path on the generated giant diff. Build
+  // a mixed context/delete/add patch so the modified-file strategy is measured,
+  // not only the new-file case.
+  let oldCount = 0
+  let newCount = 0
+  const body = fixture.diff.split("\n").map((line, index) => {
+    if (index % 3 === 0) {
+      oldCount++
+      newCount++
+      return ` context ${index}`
+    }
+    if (index % 3 === 1) {
+      oldCount++
+      return `-old ${index}`
+    }
+    newCount++
+    return line
+  })
+  const patch = `--- a/giant.ts\n+++ b/giant.ts\n@@ -1,${oldCount} +1,${newCount} @@\n${body.join("\n")}\n`
   const chunks = splitLargePatch(patch, 128) ?? []
   const overBudget = highlightBudgetExceeded(chunks.map((chunk) => chunk.patch), scale.diffLines)
+
+  // Drive the production data path and actually mount the diff through PatchDiff.
+  // These are deterministic counters; the diff renderer has its own renderer and is
+  // disposed here, so CI never depends on terminal timing.
+  const realPath = await exerciseRealDataPath(fixture, scale.screenshotBytes)
+  const diffRender = await renderGiantDiff(patch, undefined)
 
   const media = createMediaCache(
     () => ({
@@ -328,6 +356,8 @@ export async function runLoadBenchmark(
     peakResidentBytes,
     residentBytesBySession,
     diffChunks: overBudget ? 0 : chunks.length,
+    realPath,
+    diffRender,
     ...(frameTimings ? { frameTimings } : {}),
   }
 }
