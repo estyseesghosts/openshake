@@ -693,7 +693,9 @@ export function createData(config: CreateDataInput) {
   const applyStream = (entry: StreamEntry) => {
     if (entry.kind === "tool-progress") {
       message.editTool(entry.sessionID, entry.messageID, entry.partID, (tool) => {
-        if (tool.state.status === "running") tool.state.metadata = entry.metadata
+        // Event metadata is already validated by the client protocol schema.
+        if (tool.state.status === "running")
+          tool.state.metadata = entry.metadata as NonNullable<typeof tool.state.metadata>
       })
       return
     }
