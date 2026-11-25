@@ -50,20 +50,39 @@ const instruction = (id: string, paths: string[]): SessionMessageInfo => ({
   time: { created: 1 },
 })
 
-test("reasoning and exploration group at every level; other tools stand alone", () => {
-  for (const verbosity of ["medium", "high"] as const) {
-    expect(partPath({ type: "reasoning" }, verbosity)).toEqual(["reasoning"])
-    expect(partPath({ type: "tool", name: "read" }, verbosity)).toEqual(["exploration"])
-  }
+test("high keeps reasoning and exploration grouping; other tools stand alone", () => {
+  expect(partPath({ type: "reasoning" }, "high")).toEqual(["reasoning"])
+  expect(partPath({ type: "tool", name: "read" }, "high")).toEqual(["exploration"])
+  expect(partPath({ type: "tool", name: "webfetch" }, "high")).toEqual(["exploration"])
+  expect(partPath({ type: "tool", name: "websearch" }, "high")).toEqual(["exploration"])
+  expect(partPath({ type: "tool", name: "shell" }, "high")).toEqual([])
+  expect(messagePath(instruction("i", ["AGENTS.md"]), "high")).toEqual(["instructions"])
 })
 
-test("medium and high add web tools to exploration and group instruction loads", () => {
-  for (const verbosity of ["medium", "high"] as const) {
-    expect(partPath({ type: "tool", name: "webfetch" }, verbosity)).toEqual(["exploration"])
-    expect(partPath({ type: "tool", name: "websearch" }, verbosity)).toEqual(["exploration"])
-    expect(partPath({ type: "tool", name: "shell" }, verbosity)).toEqual([])
-    expect(messagePath(instruction("i", ["AGENTS.md"]), verbosity)).toEqual(["instructions"])
-  }
+test("medium folds repeatable work into semantic groups and leaves prose and instructions alone", () => {
+  expect(partPath({ type: "reasoning" }, "medium")).toEqual(["reasoning"])
+  expect(partPath({ type: "tool", name: "read" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "glob" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "grep" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "webfetch" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "websearch" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "shell" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "bash" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "execute" }, "medium")).toEqual(["medium-activity"])
+  expect(partPath({ type: "tool", name: "edit" }, "medium")).toEqual(["medium-edits"])
+  expect(partPath({ type: "tool", name: "write" }, "medium")).toEqual(["medium-edits"])
+  expect(partPath({ type: "tool", name: "patch" }, "medium")).toEqual(["medium-edits"])
+  expect(partPath({ type: "tool", name: "apply_patch" }, "medium")).toEqual(["medium-edits"])
+  expect(partPath({ type: "text" }, "medium")).toEqual([])
+  expect(messagePath(instruction("i", ["AGENTS.md"]), "medium")).toEqual(["instructions"])
+})
+
+test("medium leaves interactive, unknown and failed tools standalone", () => {
+  expect(partPath({ type: "tool", name: "question" }, "medium")).toEqual([])
+  expect(partPath({ type: "tool", name: "subagent" }, "medium")).toEqual([])
+  expect(partPath({ type: "tool", name: "task" }, "medium")).toEqual([])
+  expect(partPath({ type: "tool", name: "custom.plugin" }, "medium")).toEqual([])
+  expect(partPath({ type: "tool", name: "read", error: true }, "medium")).toEqual([])
 })
 
 test("low wraps tools, thoughts and instruction loads in activity; text and other messages break it", () => {
@@ -119,7 +138,7 @@ test("low hydration nests subgroups inside one activity group per run", () => {
   expect(activity.completed).toBe(true)
 })
 
-test("medium hydration keeps production shape plus instruction groups", () => {
+test("medium hydration folds repeatable work and keeps instruction groups", () => {
   const messages: SessionMessageInfo[] = [
     assistant("a", [tool("r1", "read"), tool("w1", "webfetch")]),
     instruction("i1", ["AGENTS.md"]),
@@ -128,9 +147,40 @@ test("medium hydration keeps production shape plus instruction groups", () => {
   ]
   const rows = reduceSessionRows(messages, new Set(), false, "medium")
   expect(rows.map((row) => (row.type === "group" ? `${row.kind}:${row.size}` : row.type))).toEqual([
-    "exploration:2",
+    "medium-activity:2",
     "instructions:2",
+    "medium-activity:1",
+  ])
+})
+
+test("medium keeps low and high projections byte-for-byte unchanged", () => {
+  const messages: SessionMessageInfo[] = [
+    { type: "user", id: "u", text: "Go", time: { created: 0 } },
+    assistant("a", [
+      { type: "reasoning", text: "Plan", time: { created: 1, completed: 2 } },
+      tool("r1", "read"),
+      tool("e1", "edit"),
+      tool("q", "question"),
+    ]),
+    instruction("i", ["AGENTS.md"]),
+    assistant("b", [tool("sh", "shell"), tool("r2", "read"), { type: "text", text: "Done" }], "stop"),
+  ]
+  const shape = (verbosity: "low" | "high") =>
+    reduceSessionRows(messages, new Set(), false, verbosity).map((row) =>
+      row.type === "group" ? `${row.kind}:${row.size}` : row.type,
+    )
+  expect(shape("low")).toEqual(["message", "activity:3", "part", "activity:3", "part", "assistant-footer"])
+  expect(shape("high")).toEqual([
+    "message",
+    "reasoning:1",
+    "exploration:1",
     "part",
+    "part",
+    "instructions:1",
+    "part",
+    "exploration:1",
+    "part",
+    "assistant-footer",
   ])
 })
 
@@ -302,6 +352,6 @@ test("a running script's changes fold into its activity at low and show under it
   const shape = (verbosity: "low" | "medium" | "high") =>
     reduceSessionRows([open], new Set(), false, verbosity).map((row) => (row.type === "group" ? row.kind : row.type))
   expect(shape("low")).toEqual(["activity"])
-  expect(shape("medium")).toEqual(["exploration", "part"])
+  expect(shape("medium")).toEqual(["medium-activity"])
   expect(shape("high")).toEqual(["exploration", "part"])
 })
