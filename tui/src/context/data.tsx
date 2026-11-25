@@ -1,4 +1,4 @@
-import { createData } from "@opencode/client/solid"
+import { createData } from "./fork-data"
 import { withMediaRefs, type LocationRef } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, on } from "solid-js"
