@@ -201,6 +201,8 @@ export type TuiInput = {
   }
   args: Args
   config: Config.Interface
+  /** Invocation shown in exit text; defaults to the packaged `shake` launcher. */
+  displayCommand?: string
   updater?: UpdateSource
   packages: PackageSource
   environment?: Readonly<Record<string, string>>
@@ -233,6 +235,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
     Effect.map((response) => response.location),
     Effect.catch(() => Effect.tryPromise(() => api.location.get())),
   )
+  startupTiming.mark("location")
   const directory = location.directory
   // Local plugin discovery is optional startup work. It starts after the first
   // frame below, so it can never delay the renderer or the first input response.
@@ -511,7 +514,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   yield* Effect.sync(() => {
     if (result.reason !== undefined)
       process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
-    const text = epilogue({ session: result.session, updatedVersion: result.updatedVersion })
+    const text = epilogue({
+      session: result.session,
+      updatedVersion: result.updatedVersion,
+      command: input.displayCommand,
+    })
     if (text) process.stdout.write(text + "\n")
   })
 })

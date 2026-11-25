@@ -32,6 +32,8 @@ export function Home() {
   const data = useData()
   const location = useLocation()
   const dimensions = useTerminalDimensions()
+  const padding = () => (dimensions().width < 44 ? 1 : 2)
+  const contentWidth = () => dimensions().width - padding() * 2
   const [logoWidth, setLogoWidth] = createSignal(0)
   // Global MCP elicitations can arrive without a session route, so keep them reachable from Home.
   const currentLocation = () => route.location ?? data.location.default()
@@ -83,8 +85,8 @@ export function Home() {
       <box
         flexGrow={1}
         alignItems="center"
-        paddingLeft={dimensions().width < 44 ? 1 : 2}
-        paddingRight={dimensions().width < 44 ? 1 : 2}
+        paddingLeft={padding()}
+        paddingRight={padding()}
       >
         <box flexGrow={1} minHeight={0} />
         <box height={3} minHeight={0} flexShrink={1} />
@@ -94,7 +96,8 @@ export function Home() {
             setLogoWidth(this.width)
           }}
         >
-          <Logo />
+          {/* Home's padding shrinks the mark's usable width; pass content width so it switches before overflowing. */}
+          <Logo width={contentWidth()} />
         </box>
         <box height={1} flexShrink={0} />
         <UpdateNotification width={logoWidth()} />

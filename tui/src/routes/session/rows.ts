@@ -22,7 +22,7 @@ import {
 } from "./grouping/session"
 import { groupID } from "./anchors"
 import { PartIndex } from "./rows-index"
-import { mediumExecuteFailed } from "./medium-activity-summary"
+import { mediumExecuteFailed, mediumExecuteMetadataFailed } from "./medium-activity-summary"
 export type { CacheUsage, PartRef, SessionRow } from "./grouping/session"
 
 /**
@@ -337,6 +337,24 @@ export function createSessionRows(
     data.on("session.tool.failed", (event) => {
       if (event.data.sessionID === sessionID() && verbosity() === "medium") rebuild()
     }),
+    // A nested Code Mode failure can arrive in progress/success metadata instead of
+    // a tool.failed event. Re-project so the failed execute leaves the collapsed group.
+    data.on("session.tool.success", (event) => {
+      if (
+        event.data.sessionID === sessionID() &&
+        verbosity() === "medium" &&
+        mediumExecuteMetadataFailed(event.data.metadata)
+      )
+        rebuild()
+    }),
+    data.on("session.tool.progress", (event) => {
+      if (
+        event.data.sessionID === sessionID() &&
+        verbosity() === "medium" &&
+        mediumExecuteMetadataFailed(event.data.metadata)
+      )
+        rebuild()
+    }),
     data.on("session.retry.scheduled", (event) => {
       if (event.data.sessionID === sessionID()) appendFooter(event.data.assistantMessageID)
     }),
@@ -485,11 +503,18 @@ function tokenTotal(tokens: NonNullable<SessionMessageAssistant["tokens"]>) {
   return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
 }
 
-export function messageBoundaryIDs(rows: SessionRow[], messages: SessionMessageInfo[]) {
-  const byID = new Map(messages.map((message) => [message.id, message]))
+export function messageBoundaryIDs(
+  rows: SessionRow[],
+  messages: SessionMessageInfo[] | ((messageID: string) => SessionMessageInfo | undefined),
+) {
+  // The route passes the client's O(1) message lookup so a streamed delta no longer
+  // rebuilds a whole-message Map. Arrays are kept for callers that only have a snapshot.
+  const byID = typeof messages === "function" ? undefined : new Map(messages.map((message) => [message.id, message]))
+  const lookup =
+    typeof messages === "function" ? messages : (messageID: string) => byID?.get(messageID)
   const seen = new Set<string>()
   return rows.map((row) => {
-    const id = rowBoundaryMessageID(row, byID)
+    const id = rowBoundaryMessageID(row, lookup)
     if (!id || seen.has(id)) return undefined
     seen.add(id)
     return id
@@ -501,9 +526,12 @@ export function sessionRowID(row: SessionRow, boundaryID?: string) {
   if (row.type === "part") return `session-part:${row.ref.messageID}:${row.ref.partID}`
 }
 
-function rowBoundaryMessageID(row: SessionRow, messages: Map<string, SessionMessageInfo>) {
+function rowBoundaryMessageID(
+  row: SessionRow,
+  messages: (messageID: string) => SessionMessageInfo | undefined,
+) {
   if (row.type === "message") {
-    const message = messages.get(row.messageID)
+    const message = messages(row.messageID)
     if (message?.type === "user" && message.text.trim()) return message.id
     return undefined
   }
@@ -518,7 +546,7 @@ function rowBoundaryMessageID(row: SessionRow, messages: Map<string, SessionMess
             ? row.messageIDs[0]
             : undefined
   if (!messageID) return undefined
-  const message = messages.get(messageID)
+  const message = messages(messageID)
   if (message?.type === "assistant") return message.id
 }
 

@@ -3,6 +3,8 @@ import { MessageWindow, defaultWindowBudgets, messageBytes } from "../context/me
 import { StreamCoalescer, type StreamEntry } from "../context/stream-coalescer"
 import { PartIndex } from "../routes/session/rows-index"
 import { createMediaCache } from "./media"
+import { splitLargePatch } from "./diff"
+import { highlightBudgetExceeded } from "./diff-highlight"
 
 export type LoadScale = {
   sessions: number
@@ -24,7 +26,8 @@ export const defaultLoadScale: LoadScale = {
 
 export type LoadFixture = {
   sessionIDs: readonly string[]
-  messages: readonly SessionMessageInfo[]
+  /** Messages are keyed per session; no flat cross-session pool. */
+  messages: ReadonlyMap<string, readonly SessionMessageInfo[]>
   diff: string
   screenshots: readonly string[]
 }
@@ -43,13 +46,14 @@ const toolNames = ["read", "glob", "grep", "shell", "edit", "apply_patch"] as co
 export function createLoadFixture(scale: LoadScale = defaultLoadScale): LoadFixture {
   const random = generator(0x5e3d)
   const sessionIDs = Array.from({ length: scale.sessions }, (_, index) => `session-${index}`)
-  const messages: SessionMessageInfo[] = []
+  const messages = new Map<string, SessionMessageInfo[]>()
 
   for (const sessionID of sessionIDs) {
+    const sessionMessages: SessionMessageInfo[] = []
     for (let index = 0; index < scale.messagesPerSession; index++) {
       const agent = index % Math.max(1, scale.assistants)
       const tool = toolNames[Math.floor(random() * toolNames.length)] ?? "read"
-      messages.push({
+      sessionMessages.push({
         type: "assistant",
         id: `${sessionID}-message-${index}`,
         agent: `agent-${agent}`,
@@ -72,7 +76,7 @@ export function createLoadFixture(scale: LoadScale = defaultLoadScale): LoadFixt
         ],
       })
       if (index % 50 === 0) {
-        messages.push({
+        sessionMessages.push({
           id: `${sessionID}-idle-${index}`,
           type: "idle",
           outcome: "succeeded",
@@ -80,6 +84,7 @@ export function createLoadFixture(scale: LoadScale = defaultLoadScale): LoadFixt
         })
       }
     }
+    messages.set(sessionID, sessionMessages)
   }
 
   const diff = Array.from({ length: scale.diffLines }, (_, index) => `+line-${index} ${"x".repeat(index % 97)}`).join(
@@ -101,14 +106,21 @@ export type BenchmarkReport = {
   firstFrameLatencyMs: number
   residentTranscriptBytes: number
   residentMediaBytes: number
+  liveBlobBytes: number
   retainedBytes: number
+  /** Peak across the run, per session and globally. */
+  peakResidentBytes: number
+  residentBytesBySession: ReadonlyMap<string, number>
+  /** Chunk count of the giant modified-file diff that was actually partitioned. */
+  diffChunks: number
 }
 
 /**
- * Opt-in local profiler. It counts events, publications and row mutations instead
- * of asserting wall-clock thresholds, so the same fixture can run in CI without
- * becoming flaky. Interleaved agents, history loading during streaming, reconnect
- * and compaction all exercise the reconciliation paths being measured.
+ * Opt-in local profiler. Several long sessions stream at once through the same
+ * coalescer, window and row-index paths the TUI uses; history loads and compaction
+ * overlap the stream. It counts events, publications and row mutations instead of
+ * asserting wall-clock thresholds, so the same fixture can run in CI without
+ * becoming flaky.
  */
 export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Promise<BenchmarkReport> {
   const fixture = createLoadFixture(scale)
@@ -120,9 +132,11 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
   let publications = 0
   let rowMutations = 0
   let compactions = 0
+  let firstFrameLatencyMs = 0
   const scheduled: Array<() => void> = []
   const publishedParts = new Map<string, string>()
   const partIndex = new PartIndex()
+  const windows = new Map<string, MessageWindow>()
 
   const apply = (entry: StreamEntry) => {
     publications++
@@ -131,22 +145,37 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
   }
   const coalescer = new StreamCoalescer(apply, (flush) => scheduled.push(flush))
 
-  // Materialize one row per streaming part; the remaining deltas must early-exit.
-  for (let agent = 0; agent < scale.assistants; agent++) {
-    const ref = { messageID: `${primary}-agent-${agent}`, partID: `text:${agent}` }
-    partIndex.materialize(ref, () => rowMutations++)
+  for (const sessionID of sessions) {
+    // Materialize one row per streaming part; the remaining deltas must early-exit.
+    for (let agent = 0; agent < scale.assistants; agent++) {
+      const ref = { messageID: `${sessionID}-agent-${agent}`, partID: `text:${agent}` }
+      partIndex.materialize(ref, () => rowMutations++)
+    }
+    const window = new MessageWindow()
+    window.set(sessionID, (fixture.messages.get(sessionID) ?? []).slice(-100), "newest")
+    windows.set(sessionID, window)
   }
 
-  const window = new MessageWindow()
-  window.set(primary, fixture.messages.slice(-100), "newest")
+  const residentBytesBySession = new Map<string, number>()
+  let peakResidentBytes = 0
+  const trackResident = () => {
+    let total = 0
+    for (const [sessionID, window] of windows) {
+      const bytes = window.residentBytes(sessionID)
+      residentBytesBySession.set(sessionID, bytes)
+      total += bytes
+    }
+    peakResidentBytes = Math.max(peakResidentBytes, total)
+  }
+  trackResident()
 
   const start = performance.now()
-  let firstFrameLatencyMs = 0
   for (let round = 0; round < scale.deltaRounds; round++) {
     for (let agent = 0; agent < scale.assistants; agent++) {
-      // Several network deltas per part per frame; coalescing must publish one each.
+      // Spread agents over several sessions so live traffic is genuinely concurrent.
+      const sessionID = sessions[agent % sessions.length] ?? primary
       for (let delta = 0; delta < 4; delta++) {
-        coalescer.text(primary, `${primary}-agent-${agent}`, `x`)
+        coalescer.text(sessionID, `${sessionID}-agent-${agent}`, "x")
         events++
       }
     }
@@ -154,10 +183,12 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
     const due = scheduled.splice(0, scheduled.length)
     for (const flush of due) flush()
     if (round === 0) firstFrameLatencyMs = performance.now() - start
+    trackResident()
 
     // History loading continues while streaming; eviction must not drop the cursor.
     if (round % 50 === 0) {
-      const page = fixture.messages.slice(round, round + 25)
+      const sessionID = sessions[Math.floor(round / 50) % sessions.length] ?? primary
+      const page = (fixture.messages.get(sessionID) ?? []).slice(round, round + 25)
       page.forEach((message) => {
         events++
         if (message.type === "assistant") {
@@ -168,8 +199,9 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
           })
         }
       })
+      windows.get(sessionID)?.prepend(sessionID, page, `page-${round}`, `next-${round}`)
     }
-    if (round === Math.floor(scale.deltaRounds / 2)) {
+    if (round === Math.floor(scale.deltaRounds * 0.5)) {
       // A reconnect drops buffered deltas without publishing stale content.
       coalescer.dispose()
       scheduled.length = 0
@@ -177,7 +209,7 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
     if (round === Math.floor(scale.deltaRounds * 0.75)) {
       // Compaction replaces the resident tail and rebuilds derived indexes while
       // streaming continues, exercising the reconciliation path.
-      window.set(primary, fixture.messages.slice(-10), "post-compaction")
+      windows.get(primary)?.set(primary, (fixture.messages.get(primary) ?? []).slice(-10), "post-compaction")
       partIndex.rebuild([])
       compactions++
       events++
@@ -190,9 +222,16 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
 
   for (let index = 0; index < Math.min(4, sessions.length - 1); index++) {
     const offset = index * 25
-    window.prepend(primary, fixture.messages.slice(offset, offset + 25), `page-${index}`, `next-${index}`)
+    windows.get(primary)?.prepend(primary, (fixture.messages.get(primary) ?? []).slice(offset, offset + 25), `page-${index}`, `next-${index}`)
   }
-  const resident = window.trim(primary, new Set(), false, defaultWindowBudgets)
+  const resident = windows.get(primary)?.trim(primary, new Set(), false, defaultWindowBudgets)
+  trackResident()
+
+  // Exercise the real large-modified-file path on the generated giant diff: the
+  // patch must be partitioned before any chunk is rendered, never one huge renderable.
+  const patch = `--- a/giant.ts\n+++ b/giant.ts\n@@ -1,0 +1,${scale.diffLines} @@\n${fixture.diff}\n`
+  const chunks = splitLargePatch(patch, 128) ?? []
+  const overBudget = highlightBudgetExceeded(chunks.map((chunk) => chunk.patch), scale.diffLines)
 
   const media = createMediaCache(
     () => ({
@@ -209,8 +248,9 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
   )
   for (const uri of fixture.screenshots) await media.read(uri)
 
-  const residentTranscriptBytes = messageBytesOf(resident.messages)
-  const residentMediaBytes = media.stats().bytes
+  const residentTranscriptBytes = resident ? messageBytesOf(resident.messages) : 0
+  const mediaStats = media.stats()
+  const residentMediaBytes = mediaStats.bytes
   return {
     scale,
     events,
@@ -221,7 +261,11 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
     firstFrameLatencyMs,
     residentTranscriptBytes,
     residentMediaBytes,
+    liveBlobBytes: mediaStats.localBytes,
     retainedBytes: residentTranscriptBytes + residentMediaBytes,
+    peakResidentBytes,
+    residentBytesBySession,
+    diffChunks: overBudget ? 0 : chunks.length,
   }
 }
 

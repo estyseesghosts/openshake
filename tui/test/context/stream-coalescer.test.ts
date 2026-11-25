@@ -60,3 +60,59 @@ test("dispose drops buffered data so a reconnect cannot publish stale content", 
     { sessionID: "new", messageID: "m", partID: "text", kind: "text", text: "fresh" },
   ])
 })
+
+test("part-scoped flush publishes only the terminal part, not other sessions", () => {
+  const { coalescer, applied, scheduled } = setup()
+  coalescer.text("A", "m1", "hello ")
+  coalescer.text("B", "m2", "unrelated")
+  coalescer.flushPart("A", "m1", "text")
+  expect(applied.map((entry) => entry.sessionID)).toEqual(["A"])
+  expect(applied[0]!.text).toBe("hello ")
+  expect(coalescer.pendingCount()).toBe(1)
+  scheduled[0]!()
+  expect(applied.map((entry) => entry.sessionID)).toEqual(["A", "B"])
+})
+
+test("message- and session-scoped flushes stay within their boundary", () => {
+  const { coalescer, applied } = setup()
+  coalescer.text("A", "m1", "one")
+  coalescer.reasoning("A", "m1", "why")
+  coalescer.text("A", "m2", "two")
+  coalescer.text("B", "m2", "three")
+  coalescer.flushMessage("A", "m1")
+  expect(applied.map((entry) => [entry.sessionID, entry.messageID, entry.kind])).toEqual([
+    ["A", "m1", "text"],
+    ["A", "m1", "reasoning"],
+  ])
+  coalescer.flushSession("B")
+  expect(applied.at(-1)!.text).toBe("three")
+  expect(coalescer.pendingCount()).toBe(1)
+  coalescer.flush()
+  expect(applied.at(-1)!.text).toBe("two")
+})
+
+test("lifecycle traffic in one session does not increase publications in another", () => {
+  const { coalescer, applied } = setup()
+  coalescer.text("A", "m", "streaming ")
+  // Session B's step/execution boundaries flush only B, which has no buffered deltas.
+  for (let index = 0; index < 10; index++) coalescer.flushSession("B")
+  expect(applied).toHaveLength(0)
+  coalescer.text("A", "m", "still one batch")
+  coalescer.flushPart("A", "m", "text")
+  expect(applied).toHaveLength(1)
+  expect(applied[0]!.text).toBe("streaming still one batch")
+})
+
+test("scoped flushes preserve insertion order across interleaved streams", () => {
+  const { coalescer, applied } = setup()
+  coalescer.text("A", "m", "a1")
+  coalescer.toolInput("A", "m", "t1", "i1")
+  coalescer.text("A", "m", "a2")
+  coalescer.flushPart("A", "m", "t1")
+  expect(applied.map((entry) => [entry.kind, entry.text])).toEqual([["tool-input", "i1"]])
+  coalescer.flushMessage("A", "m")
+  expect(applied.map((entry) => [entry.kind, entry.text])).toEqual([
+    ["tool-input", "i1"],
+    ["text", "a1a2"],
+  ])
+})

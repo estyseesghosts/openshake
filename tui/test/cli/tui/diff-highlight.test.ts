@@ -3,6 +3,7 @@ import {
   createHighlightCache,
   defaultHighlightThresholds,
   highlightBudgetExceeded,
+  partitionHighlights,
   prefixOffsets,
 } from "../../../src/util/diff-highlight"
 
@@ -28,6 +29,49 @@ test("pathological files exceed the highlight budget by lines or by a single hug
   const oneHugeLine = ["x".repeat(defaultHighlightThresholds.maxBytes + 1)]
   expect(highlightBudgetExceeded(oneHugeLine)).toBe(true)
   expect(highlightBudgetExceeded(["const a = 1", "const b = 2"])).toBe(false)
+})
+
+test("the line budget uses the real line count, not the number of chunk strings", () => {
+  const chunks = ["x".repeat(10), "y".repeat(10), "z".repeat(10)]
+  expect(highlightBudgetExceeded(chunks, defaultHighlightThresholds.maxLines + 1)).toBe(true)
+  expect(highlightBudgetExceeded(chunks, chunks.length)).toBe(false)
+  const thresholds = { maxBytes: 100, maxLines: 2 }
+  expect(highlightBudgetExceeded(chunks, 3, thresholds)).toBe(true)
+  expect(highlightBudgetExceeded(chunks, 2, thresholds)).toBe(false)
+  // One megabyte line still trips the byte budget even though its line count is one.
+  expect(highlightBudgetExceeded(["x".repeat(defaultHighlightThresholds.maxBytes + 1)], 1)).toBe(true)
+})
+
+test("a single whole-file partition clips multiline ranges into each chunk's local coordinates", () => {
+  const contents = ["const a = {", "  value: 1,", "}"]
+  const slices = partitionHighlights(
+    [
+      [0, 25, "node"],
+      [5, 18, "string"],
+      [30, 40, "outside"],
+    ],
+    contents,
+  )
+  expect(slices).toHaveLength(3)
+  expect(slices[0]).toEqual([
+    [0, 11, "node"],
+    [5, 11, "string"],
+  ])
+  expect(slices[1]).toEqual([
+    [0, 11, "node"],
+    [0, 6, "string"],
+  ])
+  expect(slices[2]).toEqual([[0, 1, "node"]])
+  expect(partitionHighlights([], contents)).toEqual([[], [], []])
+  expect(partitionHighlights([[0, 3, "node"]], [])).toEqual([])
+})
+
+test("partitioning handles context and deletion lines in the chunk source", () => {
+  const contents = [" old value", "-removed value", "+added value"]
+  const slices = partitionHighlights([[0, 33, "token"]], contents)
+  expect(slices[0]).toEqual([[0, 10, "token"]])
+  expect(slices[1]).toEqual([[0, 14, "token"]])
+  expect(slices[2]).toEqual([[0, 7, "token"]])
 })
 
 test("content-addressed highlight cache reuses parses and evicts cold entries", () => {
