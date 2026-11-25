@@ -144,14 +144,14 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     const aggregates = new FamilyAggregates()
     const syncAggregates = createMemo(() => {
       const roots = new Set(state().tabs.map((tab) => root(tab.sessionID)))
-      const observations = roots.flatMap((rootID) =>
+      const observations = [...roots].flatMap((rootID) =>
         family(rootID).map((id) => ({
           sessionID: id,
           root: rootID,
           counts: {
             running: data.session.status(id) === "running" ? 1 : 0,
             pending: data.session.pending.list(id).some((item) => item.type !== "synthetic") ? 1 : 0,
-            forms: data.session.form.list(id).length > 0 ? 1 : 0,
+            forms: (data.session.form.list(id)?.length ?? 0) > 0 ? 1 : 0,
             permissions: (data.session.permission.list(id)?.length ?? 0) > 0 ? 1 : 0,
           },
         })),
