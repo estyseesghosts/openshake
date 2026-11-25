@@ -15,6 +15,7 @@ import type { JSX } from "@opentui/solid"
 import { useRenderer } from "@opentui/solid"
 import { batch, createMemo, createSignal, For, onCleanup, Show, splitProps } from "solid-js"
 import { splitAddedPatch, splitPatchHunks, type AddedPatchChunk } from "../util/diff"
+import { createHighlightCache, highlightBudgetExceeded, prefixOffsets } from "../util/diff-highlight"
 
 export interface PatchDiffRef {
   readonly hunks: () => readonly (DiffRenderable | BoxRenderable)[]
@@ -111,6 +112,9 @@ export function PatchDiff(props: Props) {
   )
 }
 
+// Full-file syntax results are immutable for a given source; reuse them across viewport changes and remounts.
+const highlightCache = createHighlightCache<Promise<readonly SimpleHighlight[] | undefined>>()
+
 // Chunks render without wrapping so each one is exactly `rows` tall. Offscreen chunks become fixed-height
 // placeholders, and the chunks overlapping the viewport (plus one on each side) follow from the scroll offset.
 function VirtualAddedPatch(props: {
@@ -128,18 +132,17 @@ function VirtualAddedPatch(props: {
   // A chunk is not valid source on its own (a slice of a JSON object parses as an error), so highlight
   // the whole file once and give each chunk its slice of the result.
   const contents = createMemo(() => props.chunks.map((chunk) => chunk.lines.map((line) => line.slice(1)).join("\n")))
-  const offsets = createMemo(() =>
-    contents().map((_, index, all) => all.slice(0, index).reduce((sum, content) => sum + content.length + 1, 0)),
-  )
+  const offsets = createMemo(() => prefixOffsets(contents()))
   const fileHighlights = createMemo(() => {
     const filetype = props.diffProps.filetype
-    if (!filetype) return
-    return (
+    if (!filetype || highlightBudgetExceeded(contents())) return Promise.resolve(undefined)
+    const source = contents().join("\n")
+    return highlightCache.get(source, () =>
       getTreeSitterClient()
-        .highlightOnce(contents().join("\n"), filetype)
+        .highlightOnce(source, filetype)
         .then((result) => result.highlights)
         // Rejects when the renderer tears down the client mid-parse; chunks then keep their own highlights.
-        .catch(() => undefined)
+        .catch(() => undefined),
     )
   })
   const chunkHighlights =
