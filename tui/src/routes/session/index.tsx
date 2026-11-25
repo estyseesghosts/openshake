@@ -10,6 +10,7 @@ import {
   onCleanup,
   Show,
   Switch,
+  untrack,
   type Accessor,
 } from "solid-js"
 import path from "node:path"
@@ -306,7 +307,11 @@ export function Session(props: {
     () => pinAbove(),
   )
   const boundaries = createMemo(() =>
-    messageBoundaryIDs(rows, (messageID) => data.session.message.get(route.sessionID, messageID)),
+    messageBoundaryIDs(rows, (messageID) =>
+      // Only the projected rows decide when boundaries change; streamed message
+      // content must not re-run this whole-transcript walk.
+      untrack(() => data.session.message.get(route.sessionID, messageID)),
+    ),
   )
   const anchors = createTimelineAnchors()
   const [navigationMessage, setNavigationMessage] = createSignal<string>()
