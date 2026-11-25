@@ -22,6 +22,7 @@ import {
 } from "./grouping/session"
 import { groupID } from "./anchors"
 import { PartIndex } from "./rows-index"
+import { mediumExecuteFailed } from "./medium-activity-summary"
 export type { CacheUsage, PartRef, SessionRow } from "./grouping/session"
 
 /**
@@ -441,7 +442,9 @@ export function reduceSessionRows(
       const partID = part.type === "tool" ? part.id : `${part.type}:${ordinals[part.type]++}`
       if ((part.type === "text" || part.type === "reasoning") && !part.text.trim()) return
       const projection: AppendPart =
-        part.type === "tool" ? { type: "tool", name: part.name, error: part.state.status === "error" } : part
+        part.type === "tool"
+          ? { type: "tool", name: part.name, error: part.state.status === "error" || mediumExecuteFailed(part) }
+          : part
       rows.push({
         entry: { type: "part", ref: { messageID: message.id, partID } },
         part: projection,
