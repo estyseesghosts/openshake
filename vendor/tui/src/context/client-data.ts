@@ -58,6 +58,8 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { StreamCoalescer, type StreamEntry } from "./stream-coalescer"
 import { MessageWindow } from "./message-window"
+import { collectPages } from "./session-pages"
+import { IdleMarkerIndex } from "./idle-markers"
 
 export type DataSessionStatus = "idle" | "running"
 /**
@@ -420,6 +422,7 @@ export function createData(config: CreateDataInput) {
   )
   const messageIndex = new Map<string, Map<string, number>>()
   const messageWindow = new MessageWindow()
+  const idleMarkers = new IdleMarkerIndex()
   const pinnedFor = (sessionID: string) => {
     const pinned = new Set<string>(outbox)
     ;(store.session.pending[sessionID] ?? []).forEach((item) => {
@@ -634,6 +637,7 @@ export function createData(config: CreateDataInput) {
     },
     insert(sessionID: string, item: SessionMessageInfo) {
       message.update(sessionID, (draft, index) => message.append(draft, index, item))
+      idleMarkers.add(sessionID, item)
     },
     // Streaming events target one assistant message and, within it, the latest part of a kind.
     // A missing target means the row was never loaded or was evicted; the event is dropped.
@@ -727,12 +731,11 @@ export function createData(config: CreateDataInput) {
 
   // Every direct subagent, not only the server's default first page, so a root's family cost
   // counts all of them. Pages stay newest first, the order the family index has always used.
-  async function listChildren(input: SessionListInput): Promise<SessionInfo[]> {
-    const page = await api().session.list(input)
-
-    if (page.data.length < CHILD_PAGE || !page.cursor.next) return page.data
-
-    return [...page.data, ...(await listChildren({ cursor: page.cursor.next, limit: CHILD_PAGE }))]
+  function listChildren(input: SessionListInput): Promise<SessionInfo[]> {
+    return collectPages(async (cursor) => {
+      const page = await api().session.list({ ...input, ...(cursor ? { cursor } : {}), limit: CHILD_PAGE })
+      return { data: page.data, next: page.cursor.next ?? undefined }
+    })
   }
 
   // Walk parentID upward through loaded session info to the family root. When a
@@ -791,6 +794,7 @@ export function createData(config: CreateDataInput) {
     const messages = store.session.message[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
     messageIndex.delete(sessionID)
     messageWindow.forget(sessionID)
+    idleMarkers.observe(sessionID, messages)
     if (messages.length) messageIndex.set(sessionID, new Map(messages.map((item, index) => [item.id, index])))
     setStore(
       "session",
@@ -1783,6 +1787,14 @@ export function createData(config: CreateDataInput) {
       status(sessionID: string) {
         return store.session.active[sessionID] ?? "idle"
       },
+      /** Turn-boundary metadata, tracked at publication time instead of rescanning history. */
+      idle: {
+        has(sessionID: string) {
+          // Read the store path so the lookup is reactive to message publication.
+          void store.session.message[sessionID]
+          return idleMarkers.has(sessionID)
+        },
+      },
       active() {
         return Object.entries(store.session.active).flatMap(([sessionID, status]) =>
           status === "running" ? [sessionID] : [],
@@ -2080,8 +2092,14 @@ export function createData(config: CreateDataInput) {
         },
         get(sessionID: string, messageID: string) {
           const messages = store.session.message[sessionID]
-          const position = messageIndex.get(sessionID)?.get(messageID)
+          const position = this.indexOf(sessionID, messageID)
           return position === undefined ? undefined : messages?.[position]
+        },
+        /** O(1) position lookup backed by the client index the route previously rebuilt. */
+        indexOf(sessionID: string, messageID: string) {
+          // Track the store path so the lookup re-evaluates when messages are published.
+          void store.session.message[sessionID]
+          return messageIndex.get(sessionID)?.get(messageID)
         },
         /** Re-reads every loaded message whose tool file data was dropped, for a client that starts showing tool files. */
         restoreFiles() {
@@ -2175,6 +2193,7 @@ export function createData(config: CreateDataInput) {
               messageWindow.set(sessionID, messages, cursor)
               const bounded = messageWindow.trim(sessionID, pinnedFor(sessionID), false)
               messageIndex.set(sessionID, messageWindow.index(sessionID))
+              idleMarkers.observe(sessionID, bounded.messages)
               setStore("session", "message", sessionID, reconcile(bounded.messages))
               // Kept pages keep the cursor to the page before them; an evicted page
               // is refetchable through its own cursor.
@@ -2248,6 +2267,7 @@ export function createData(config: CreateDataInput) {
               messageWindow.prepend(sessionID, added, cursor, next)
               const bounded = messageWindow.trim(sessionID, pinnedFor(sessionID), Boolean(options?.all))
               messageIndex.set(sessionID, messageWindow.index(sessionID))
+              idleMarkers.observe(sessionID, bounded.messages)
               setStore("session", "message", sessionID, reconcile(bounded.messages))
               setStore("session", "messageCursor", sessionID, bounded.cursor)
             })

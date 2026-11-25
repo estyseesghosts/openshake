@@ -15,6 +15,7 @@ import { useTuiPaths } from "./runtime"
 import { newSessionLocation } from "../config/new-session-location"
 import { createSessionRetention } from "@opencode/client/solid"
 import { mapLimited, warmSessionIDs } from "./session-tabs-thermal"
+import { FamilyAggregates } from "./session-aggregates"
 import { createProgramStatus, type PendingSession } from "./program-status"
 import { anchorKey, type AnchorTarget } from "../routes/session/anchors"
 import {
@@ -138,6 +139,26 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       unread: {},
     })
     const current = () => (route.data.type === "session" ? root(route.data.sessionID) : undefined)
+    // Root/family counters are reconciled from reactive member state. Drawing N tabs
+    // then reads N snapshots instead of walking N families each time.
+    const aggregates = new FamilyAggregates()
+    const syncAggregates = createMemo(() => {
+      const roots = new Set(state().tabs.map((tab) => root(tab.sessionID)))
+      const observations = roots.flatMap((rootID) =>
+        family(rootID).map((id) => ({
+          sessionID: id,
+          root: rootID,
+          counts: {
+            running: data.session.status(id) === "running" ? 1 : 0,
+            pending: data.session.pending.list(id).some((item) => item.type !== "synthetic") ? 1 : 0,
+            forms: data.session.form.list(id).length > 0 ? 1 : 0,
+            permissions: (data.session.permission.list(id)?.length ?? 0) > 0 ? 1 : 0,
+          },
+        })),
+      )
+      aggregates.sync(observations)
+      return aggregates
+    })
     const newTab = createMemo((open = false) => {
       if (route.data.type === "home") return true
       if (!open) return false
@@ -155,7 +176,8 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     })
     const status = (sessionID: string) => {
       const session = root(sessionID)
-      const members = family(session)
+      syncAggregates()
+      const counts = aggregates.snapshot(session)
       return {
         // Unread reads the root session only: background subagent completions wake the parent,
         // whose own idle transition then carries the signal.
@@ -165,17 +187,13 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
             ? ("error" as const)
             : ("activity" as const),
         promptPulse: promptPulses()[session] ?? 0,
-        attention: members.some((id) => (data.session.permission.list(id)?.length ?? 0) > 0)
+        attention: counts.permissions > 0
           ? ("permission" as const)
-          : members.some((id) => (data.session.form.list(id)?.length ?? 0) > 0)
+          : counts.forms > 0
             ? ("question" as const)
             : (false as const),
         // Parked synthetic context (user shells, plan reminders) stays pending without execution; only work counts as busy.
-        busy: members.some(
-          (id) =>
-            data.session.status(id) === "running" ||
-            data.session.pending.list(id).some((item) => item.type !== "synthetic"),
-        ),
+        busy: counts.running > 0 || counts.pending > 0,
         renaming: data.session.title.pending(session),
       }
     }
