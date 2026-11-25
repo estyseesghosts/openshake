@@ -55,7 +55,7 @@ export class PartIndex {
         const key = rowKey(row)
         groupRefs(row, true).forEach((ref) => {
           next.add(refKey(ref))
-          if (row.kind === "reasoning") nextOwners.set(refKey(ref), key)
+          if (row.kind === "reasoning" && key) nextOwners.set(refKey(ref), key)
         })
         return
       }
