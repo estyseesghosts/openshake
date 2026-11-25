@@ -339,6 +339,79 @@ test("a finished execute with no nested calls counts as one tool", () => {
   expect(activitySummary([{ message, part: tool("x", "execute") }], 0).label).toBe("1 tool")
 })
 
+test("medium failed tools leave their group and stay standalone", () => {
+  const rows = reduceSessionRows(
+    [
+      assistant("a", [
+        tool("r1", "read"),
+        tool("bad", "read", "error"),
+        tool("r2", "read"),
+      ]),
+    ],
+    new Set(),
+    false,
+    "medium",
+  )
+  expect(rows.map((row) => (row.type === "group" ? `${row.kind}:${row.size}` : row.type))).toEqual([
+    "medium-activity:1",
+    "part",
+    "medium-activity:1",
+  ])
+})
+
+test("medium hydration and live append converge on the same projected tree", () => {
+  const hydrated = reduceSessionRows(
+    [
+      assistant("a", [
+        { type: "text", text: "Now looking" },
+        tool("r1", "read"),
+        tool("r2", "read"),
+        tool("g1", "grep"),
+        tool("s1", "shell"),
+        tool("s2", "bash"),
+        tool("e1", "edit"),
+        tool("r3", "read"),
+        tool("e2", "edit"),
+        tool("w1", "write"),
+        tool("bad", "read", "error"),
+        tool("q", "question"),
+        { type: "text", text: "Done" },
+      ]),
+    ],
+    new Set(),
+    false,
+    "medium",
+  )
+  const live: SessionRow[] = []
+  const add = (partID: string, part: Parameters<typeof append>[2]) =>
+    append(live, { messageID: "a", partID }, part, live.length, "medium")
+  add("text:0", { type: "text" })
+  for (const id of ["r1", "r2", "g1"]) add(id, { type: "tool", name: id === "g1" ? "grep" : "read" })
+  add("s1", { type: "tool", name: "shell" })
+  add("s2", { type: "tool", name: "bash" })
+  add("e1", { type: "tool", name: "edit" })
+  add("r3", { type: "tool", name: "read" })
+  add("e2", { type: "tool", name: "edit" })
+  add("w1", { type: "tool", name: "write" })
+  add("bad", { type: "tool", name: "read", error: true })
+  add("q", { type: "tool", name: "question" })
+  add("text:1", { type: "text" })
+
+  const shape = (rows: SessionRow[]) =>
+    rows.map((row) => (row.type === "group" ? `${row.kind}:${row.size}` : row.type))
+  expect(shape(hydrated)).toEqual([
+    "part",
+    "medium-activity:5",
+    "medium-edits:1",
+    "medium-activity:1",
+    "medium-edits:2",
+    "part",
+    "part",
+    "part",
+  ])
+  expect(shape(live)).toEqual(shape(hydrated))
+})
+
 test("a running script's changes fold into its activity at low and show under it at medium and high", () => {
   const script: SessionMessageAssistantTool = {
     ...tool("x", "execute", "running"),
