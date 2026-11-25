@@ -108,6 +108,7 @@ import { DialogVariant } from "./component/dialog-variant"
 import { DialogSpeed } from "./component/dialog-speed"
 import { destroyRenderer, setTerminalTitle } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { startupTiming } from "./util/startup-timing"
 import { AttentionProvider } from "./context/attention"
 import { StorageProvider, useStorage } from "./context/storage"
 import { SessionTerminalsProvider } from "./context/session-terminals"
@@ -215,6 +216,7 @@ export type TuiInput = {
 }
 
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+  startupTiming.mark("entry")
   const log = input.log ?? (() => {})
   const global = yield* Global.Service
   const config = Config.resolve(yield* Effect.tryPromise(() => input.config.get()), {
@@ -232,7 +234,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
     Effect.catch(() => Effect.tryPromise(() => api.location.get())),
   )
   const directory = location.directory
-  const pluginDirectories = yield* Effect.promise(() => localPluginDirectories(process.cwd(), global.config))
+  // Local plugin discovery is optional startup work. It starts after the first
+  // frame below, so it can never delay the renderer or the first input response.
   const handoff = input.terminalHandoff ? yield* Effect.promise(input.terminalHandoff) : undefined
   const managed = input.server.service
   const service = managed
@@ -292,6 +295,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             }),
         )
       })
+      startupTiming.mark("renderer")
       renderer.setMaxListeners(15)
       const clipboard = yield* Effect.acquireRelease(
         Effect.sync(() => createTuiClipboard(renderer)),
@@ -317,10 +321,19 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       )
       renderer.once("destroy", () => shutdown.openUnsafe())
       yield* Effect.tryPromise(async () => {
-        const mode = handoff?.mode ?? (await renderer.waitForThemeMode(1000)) ?? "dark"
+        // Paint the shell against an immediate fallback theme. The OSC probe runs
+        // concurrently and repaints only if it resolves to a different mode.
+        const fallback: ThemeMode = handoff?.mode ?? "dark"
+        const themeProbe = handoff ? Promise.resolve(handoff.mode) : renderer.waitForThemeMode(1000)
+        let setThemeMode: (mode: ThemeMode) => void = () => {}
+        let setPluginDirectories: (directories: string[]) => void = () => {}
         if (renderer.isDestroyed) return
 
         await render(() => {
+          const [mode, setMode] = createSignal<ThemeMode>(fallback)
+          const [directories, setDirectories] = createSignal<string[]>([])
+          setThemeMode = setMode
+          setPluginDirectories = setDirectories
           return (
             <LogProvider log={log}>
               <ExitProvider
@@ -340,7 +353,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                     <ErrorBoundary
                       fallback={(error, reset) => (
                         <ClipboardProvider value={clipboard}>
-                          <ErrorComponent error={error} reset={reset} mode={mode} />
+                          <ErrorComponent error={error} reset={reset} mode={mode()} />
                         </ClipboardProvider>
                       )}
                     >
@@ -418,7 +431,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                     <SessionTabsProvider>
                                                       <SessionTerminalsProvider>
                                                         <ThemeProvider
-                                                          mode={mode}
+                                                          mode={mode()}
                                                           source={createThemeSource(global.config)}
                                                         >
                                                           <ThemeErrorToast />
@@ -437,7 +450,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                             <PanelProvider>
                                                                               <PluginProvider
                                                                                 packages={input.packages}
-                                                                                directories={pluginDirectories}
+                                                                                directories={directories()}
                                                                               >
                                                                                 <App />
                                                                               </PluginProvider>
@@ -476,11 +489,21 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             </LogProvider>
           )
         }, renderer)
+        // Optional discovery and the theme probe are now strictly post-first-paint.
+        // PluginProvider reacts to the directory signal and reconciles in its own surface.
+        void Effect.runPromise(Effect.promise(() => localPluginDirectories(process.cwd(), global.config)))
+          .then(setPluginDirectories)
+          .catch((error) => log("error", "Local plugin discovery failed", { error }))
+        void themeProbe.then((probed) => {
+          if (probed && probed !== fallback && !renderer.isDestroyed) setThemeMode(probed)
+        })
         if (handoff) {
           renderer.once(CliRenderEvents.FRAME, handoff.complete)
           renderer.requestRender()
         }
       })
+      if (process.env.OPENCODE_STARTUP_TIMING)
+        log("info", "startup timing", { ...startupTiming.snapshot().elapsed })
       yield* shutdown.await
       return { session: exit.session, updatedVersion: exit.updatedVersion, reason: exit.reason }
     }),
@@ -521,6 +544,18 @@ function App() {
   const terminalEnvironment = useTuiTerminalEnvironment()
   let paletteTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  // The shell is usable after its first frame; plugin reconciliation is optional work
+  // with its own surfaces, so it must not gate input or the whole transcript.
+  const [coreReady, setCoreReady] = createSignal(false)
+  // Core readiness and optional plugin readiness are distinct milestones. Neither
+  // blocks the other; these marks only feed the opt-in startup timing report.
+  createEffect(() => {
+    if (client.connection.status() === "connected" && route.data.type === "session")
+      startupTiming.mark("session-usable")
+  })
+  createEffect(() => {
+    if (plugins.ready()) startupTiming.mark("plugins-settled")
+  })
   // OpenTUI draws Markdown prose natively, so the first thought or code fence would start the tree-sitter worker
   // and load the markdown grammars itself. Do that once the first frame is out, off the main thread.
   const warmHighlighter = async () => {
@@ -533,6 +568,8 @@ function App() {
     }
   }
   const afterFrame = () => {
+    startupTiming.mark("first-frame")
+    setCoreReady(true)
     // The native writer can still be flushing the frame when FRAME fires. Keep OSC probes behind visible app output.
     paletteTimer = setTimeout(() => {
       afterPaint()
@@ -1476,7 +1513,7 @@ function App() {
           <SessionTabs orientation="vertical" width={tabsResize.size()} />
         </Show>
         <box flexGrow={1} minWidth={0} flexDirection="column">
-          <Show when={plugins.ready()}>
+          <Show when={coreReady()}>
             <box flexGrow={1} minHeight={0} flexDirection="column">
               <Show when={tabsVisible() && !tabsVertical()}>
                 <SessionTabs />
@@ -1515,7 +1552,7 @@ function App() {
         <DevToolsBar />
       </Show>
       <Show when={!startup.skipInitialLoading}>
-        <StartupLoading ready={plugins.ready} />
+        <StartupLoading ready={coreReady} />
       </Show>
       <Show when={showReconnecting()}>
         <Reconnecting managed={client.restart !== undefined} />
