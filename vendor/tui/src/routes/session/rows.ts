@@ -233,9 +233,10 @@ export function createSessionRows(
                 row.kind === "reasoning" &&
                 groupRefs(row, true).some((item) => item.messageID === ref.messageID && item.partID === ref.partID),
             )
-            if (group?.type === "group") {
-              group.key = groupID(group, 0)
-              partIndex.setOwner(ref, group.key)
+            const key = group?.type === "group" ? groupID(group, 0) : undefined
+            if (group?.type === "group" && key) {
+              group.key = key
+              partIndex.setOwner(ref, key)
             }
           }
         }),
