@@ -14,6 +14,7 @@ import { useStorage } from "./storage"
 import { useTuiPaths } from "./runtime"
 import { newSessionLocation } from "../config/new-session-location"
 import { createSessionRetention } from "@opencode/client/solid"
+import { mapLimited, warmSessionIDs } from "./session-tabs-thermal"
 import { createProgramStatus, type PendingSession } from "./program-status"
 import { anchorKey, type AnchorTarget } from "../routes/session/anchors"
 import {
@@ -137,13 +138,6 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       unread: {},
     })
     const current = () => (route.data.type === "session" ? root(route.data.sessionID) : undefined)
-    createSessionRetention({
-      session: data.session,
-      current: () =>
-        route.data.type === "session" && route.data.sessionID !== "dummy" ? route.data.sessionID : undefined,
-      keep: () => (enabled() ? state().tabs.map((tab) => tab.sessionID) : []),
-      limit: 3,
-    })
     const newTab = createMemo((open = false) => {
       if (route.data.type === "home") return true
       if (!open) return false
@@ -185,6 +179,24 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
         renaming: data.session.title.pending(session),
       }
     }
+
+    // Tab metadata stays for every open tab; only a small residency set keeps the
+    // heavy transcript. Tools needing user attention are pinned regardless of recency.
+    createSessionRetention({
+      session: data.session,
+      current: () =>
+        route.data.type === "session" && route.data.sessionID !== "dummy" ? route.data.sessionID : undefined,
+      keep: () => {
+        if (!enabled()) return []
+        const tabs = state().tabs.map((tab) => tab.sessionID)
+        const warm = new Set(warmSessionIDs(current(), tabs, history.entries, 2))
+        tabs.forEach((id) => {
+          if (status(id).attention) warm.add(id)
+        })
+        return [...warm]
+      },
+      limit: 3,
+    })
 
     createProgramStatus({
       renderer,
@@ -299,7 +311,13 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       const sessionIDs = signature.split("\n")
       let stale = false
       void (async () => {
-        await Promise.allSettled(sessionIDs.map((sessionID) => data.session.sync(sessionID, { children: true })))
+        // Lightweight SessionInfo for every tab keeps the strip, unread indicators,
+        // project and branch labels accurate. Children are only fetched for the
+        // visible session; a bounded fan-out prevents a restored workspace from
+        // issuing one request per tab at once.
+        await mapLimited(sessionIDs, 2, (sessionID) =>
+          data.session.sync(sessionID, { children: sessionID === current() }),
+        )
         if (stale) return
         const locations = new Map(
           sessionIDs
@@ -314,18 +332,19 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
         )
       })()
       const timer = setTimeout(async () => {
-        const sessions = state()
-          .tabs.map((tab) => tab.sessionID)
-          .filter((sessionID) => sessionID !== current())
-        for (const sessionID of sessions) {
-          if (stale) return
-          await Promise.allSettled([
-            data.session.message.sync(sessionID),
-            data.session.pending.sync(sessionID),
-            data.session.permission.sync(sessionID),
-            data.session.form.sync(sessionID),
-          ])
-        }
+        // Warm the single most likely next tab, not every hidden tab. Switching to
+        // an evicted tab renders its existing shell immediately and the session
+        // frame hydrates the recent tail on mount, so this is purely an optimization.
+        const open = state().tabs.map((tab) => tab.sessionID)
+        const next = [...history.entries].reverse().find((id) => id !== current() && open.includes(id)) ??
+          open.find((id) => id !== current())
+        if (!next || stale) return
+        await Promise.allSettled([
+          data.session.message.sync(next),
+          data.session.pending.sync(next),
+          data.session.permission.sync(next),
+          data.session.form.sync(next),
+        ])
       }, TAB_PREFETCH_DELAY)
       onCleanup(() => {
         stale = true
