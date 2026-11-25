@@ -41,6 +41,17 @@ export function busyTab(input: { scripts: number; subagents: number; shells: num
   return "subagents"
 }
 
+// Short summary of what a session has running, used by the picker affordances.
+export function busyLabel(input: { scripts: number; subagents: number; shells: number }) {
+  return [
+    input.scripts ? `${input.scripts} script${input.scripts === 1 ? "" : "s"}` : undefined,
+    input.subagents ? `${input.subagents} subagent${input.subagents === 1 ? "" : "s"}` : undefined,
+    input.shells ? `${input.shells} shell${input.shells === 1 ? "" : "s"}` : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" · ")
+}
+
 // The picker's tabs in a fixed order, and which one is active. Tabs that come and go while it is open, like Scripts,
 // leave the active tab alone unless they remove it.
 export function createComposerTabs(input: { open: () => boolean; defaultTab: () => string | undefined }) {
