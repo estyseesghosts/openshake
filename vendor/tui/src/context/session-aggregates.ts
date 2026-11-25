@@ -33,25 +33,38 @@ export class FamilyAggregates {
     else this.roots.set(root, current)
   }
 
-  /** Reconcile all observations in one pass. Absent members are removed. */
+  /**
+   * Apply one member's observation. This is the incremental path: a tab only
+   * updates its own member when its active/pending/form/permission state changes,
+   * instead of rebuilding observations for every open family.
+   */
+  update(observation: FamilyObservation) {
+    const { sessionID, root, counts } = observation
+    if (!root) return
+    const previous = this.members.get(sessionID)
+    if (previous?.root === root && fields.every((field) => previous.counts[field] === counts[field])) return
+    if (previous) this.adjust(previous.root, previous.counts, -1)
+    this.adjust(root, counts, 1)
+    this.members.set(sessionID, { root, counts: { ...counts } })
+  }
+
+  /** Forget a member that left every open family, or was deleted. */
+  remove(sessionID: string) {
+    const previous = this.members.get(sessionID)
+    if (!previous) return
+    this.adjust(previous.root, previous.counts, -1)
+    this.members.delete(sessionID)
+  }
+
+  /** Reconcile a full snapshot on reconnect. Absent members are removed. */
   sync(observations: Iterable<FamilyObservation>) {
-    const next = new Map<string, { root: string; counts: FamilyCounts }>()
+    const present = new Set<string>()
     for (const observation of observations) {
-      if (observation.root) next.set(observation.sessionID, { root: observation.root, counts: observation.counts })
+      present.add(observation.sessionID)
+      this.update(observation)
     }
-    for (const [sessionID, previous] of this.members) {
-      if (!next.has(sessionID)) {
-        this.adjust(previous.root, previous.counts, -1)
-        this.members.delete(sessionID)
-      }
-    }
-    for (const [sessionID, current] of next) {
-      const previous = this.members.get(sessionID)
-      if (previous?.root === current.root && fields.every((field) => previous.counts[field] === current.counts[field]))
-        continue
-      if (previous) this.adjust(previous.root, previous.counts, -1)
-      this.adjust(current.root, current.counts, 1)
-      this.members.set(sessionID, { root: current.root, counts: { ...current.counts } })
+    for (const sessionID of [...this.members.keys()]) {
+      if (!present.has(sessionID)) this.remove(sessionID)
     }
   }
 

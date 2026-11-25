@@ -1,4 +1,5 @@
 import type { SessionMessageInfo } from "@opencode/client"
+import { CliRenderEvents } from "@opentui/core"
 import { MessageWindow, defaultWindowBudgets, messageBytes } from "../context/message-window"
 import { StreamCoalescer, type StreamEntry } from "../context/stream-coalescer"
 import { PartIndex } from "../routes/session/rows-index"
@@ -96,6 +97,25 @@ export function createLoadFixture(scale: LoadScale = defaultLoadScale): LoadFixt
   return { sessionIDs, messages, diff, screenshots }
 }
 
+export type BenchmarkOptions = {
+  /**
+   * Opt in to a real renderer and measure actual FRAME-event latency. Off by default:
+   * ordinary CI runs only the deterministic counters and never depends on timing.
+   */
+  realFrames?: boolean
+  width?: number
+  height?: number
+}
+
+export type FrameTimings = {
+  frames: number
+  meanMs: number
+  p95Ms: number
+  maxMs: number
+  /** Time from benchmark start to the first real frame. */
+  firstFrameMs: number
+}
+
 export type BenchmarkReport = {
   scale: LoadScale
   events: number
@@ -113,6 +133,8 @@ export type BenchmarkReport = {
   residentBytesBySession: ReadonlyMap<string, number>
   /** Chunk count of the giant modified-file diff that was actually partitioned. */
   diffChunks: number
+  /** Present only with `realFrames: true`; wall-clock data is never asserted in CI. */
+  frameTimings?: FrameTimings
 }
 
 /**
@@ -122,7 +144,10 @@ export type BenchmarkReport = {
  * asserting wall-clock thresholds, so the same fixture can run in CI without
  * becoming flaky.
  */
-export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Promise<BenchmarkReport> {
+export async function runLoadBenchmark(
+  scale: LoadScale = defaultLoadScale,
+  options: BenchmarkOptions = {},
+): Promise<BenchmarkReport> {
   const fixture = createLoadFixture(scale)
   const sessions = fixture.sessionIDs
   const primary = sessions[0]
@@ -134,6 +159,25 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
   let compactions = 0
   let firstFrameLatencyMs = 0
   const scheduled: Array<() => void> = []
+
+  // Real frames are opt-in and load the test renderer lazily, so ordinary CI never
+  // pays for a terminal or depends on wall-clock timing.
+  let rendererSetup: Awaited<ReturnType<typeof import("@opentui/core/testing")["createTestRenderer"]>> | undefined
+  const frameDurations: number[] = []
+  let firstFrameAt: number | undefined
+  const benchmarkStart = performance.now()
+  if (options.realFrames) {
+    const { createTestRenderer } = await import("@opentui/core/testing")
+    rendererSetup = await createTestRenderer({ width: options.width ?? 100, height: options.height ?? 30 })
+    rendererSetup.renderer.start()
+    let lastFrameAt = 0
+    rendererSetup.renderer.on(CliRenderEvents.FRAME, () => {
+      const now = performance.now()
+      if (lastFrameAt > 0) frameDurations.push(now - lastFrameAt)
+      else firstFrameAt = now - benchmarkStart
+      lastFrameAt = now
+    })
+  }
   const publishedParts = new Map<string, string>()
   const partIndex = new PartIndex()
   const windows = new Map<string, MessageWindow>()
@@ -179,10 +223,12 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
         events++
       }
     }
-    // Drain one publication per round, modelling a render frame rather than a network event.
+    // Drain one publication per round. In real-frame mode the renderer then paints
+    // an actual frame, so the FRAME listener measures genuine paint latency.
     const due = scheduled.splice(0, scheduled.length)
     for (const flush of due) flush()
-    if (round === 0) firstFrameLatencyMs = performance.now() - start
+    if (rendererSetup) await rendererSetup.renderOnce()
+    else if (round === 0) firstFrameLatencyMs = performance.now() - start
     trackResident()
 
     // History loading continues while streaming; eviction must not drop the cursor.
@@ -251,6 +297,22 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
   const residentTranscriptBytes = resident ? messageBytesOf(resident.messages) : 0
   const mediaStats = media.stats()
   const residentMediaBytes = mediaStats.bytes
+
+  let frameTimings: FrameTimings | undefined
+  if (rendererSetup) {
+    await rendererSetup.dispose()
+    const sorted = frameDurations.toSorted((left, right) => left - right)
+    const total = sorted.reduce((sum, duration) => sum + duration, 0)
+    frameTimings = {
+      frames: sorted.length + (firstFrameAt === undefined ? 0 : 1),
+      meanMs: sorted.length === 0 ? 0 : total / sorted.length,
+      p95Ms: sorted.length === 0 ? 0 : (sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0),
+      maxMs: sorted.at(-1) ?? 0,
+      firstFrameMs: firstFrameAt ?? 0,
+    }
+    firstFrameLatencyMs = frameTimings.firstFrameMs
+  }
+
   return {
     scale,
     events,
@@ -266,6 +328,7 @@ export async function runLoadBenchmark(scale: LoadScale = defaultLoadScale): Pro
     peakResidentBytes,
     residentBytesBySession,
     diffChunks: overBudget ? 0 : chunks.length,
+    ...(frameTimings ? { frameTimings } : {}),
   }
 }
 

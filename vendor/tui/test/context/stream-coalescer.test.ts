@@ -21,7 +21,7 @@ test("many deltas to one part publish one Byte-for-byte identical string", () =>
 })
 
 test("interleaved text, reasoning and tool streams stay independent", () => {
-  const { coalescer, applied, scheduled } = setup()
+  const { coalescer, applied } = setup()
   coalescer.text("s", "m", "hello ")
   coalescer.reasoning("s", "m", "plan")
   coalescer.toolInput("s", "m", "t1", '{"pa')

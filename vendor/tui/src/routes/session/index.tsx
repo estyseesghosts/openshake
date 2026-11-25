@@ -10,7 +10,6 @@ import {
   onCleanup,
   Show,
   Switch,
-  untrack,
   type Accessor,
 } from "solid-js"
 import path from "node:path"
@@ -108,8 +107,8 @@ import { usePlugin } from "../../plugin/context"
 import {
   cacheReuseDrop,
   completeGroupBoundary,
+  createRowBoundaries,
   createSessionRows,
-  messageBoundaryIDs,
   resolvePart,
   sessionRowID,
   type CacheUsage,
@@ -185,9 +184,9 @@ export function Session(props: {
   // Reuse the client's incrementally maintained index instead of rebuilding a full
   // map in the route on every message publication.
   const messageIndex = (messageID: string) => data.session.message.indexOf(route.sessionID, messageID)
-  const legacy = createMemo(() =>
-    data.session.idle.has(route.sessionID) ? false : SessionTurn.legacy(messages()),
-  )
+  // Legacy turns are the direct absence of an idle marker in the authoritative
+  // index; scanning the whole transcript here subscribed this route to every delta.
+  const legacy = createMemo(() => !data.session.idle.has(route.sessionID))
   const messagesBeforeRevert = () => {
     const messageID = session()?.revert?.messageID
     if (!messageID) return messages()
@@ -306,12 +305,10 @@ export function Session(props: {
     // A scroll-triggered history load joins this boundary load instead of publishing its own page.
     () => pinAbove(),
   )
-  const boundaries = createMemo(() =>
-    messageBoundaryIDs(rows, (messageID) =>
-      // Only the projected rows decide when boundaries change; streamed message
-      // content must not re-run this whole-transcript walk.
-      untrack(() => data.session.message.get(route.sessionID, messageID)),
-    ),
+  // Boundary IDs are maintained with the row projection in rows.ts; they change
+  // with row structure, not with streamed part content.
+  const boundaries = createRowBoundaries(rows, (messageID) =>
+    data.session.message.get(route.sessionID, messageID),
   )
   const anchors = createTimelineAnchors()
   const [navigationMessage, setNavigationMessage] = createSignal<string>()
