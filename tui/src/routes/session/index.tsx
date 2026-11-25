@@ -77,7 +77,7 @@ import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { UsageLimitNotice, useLimitNotice, useUsageAlerts } from "../../component/usage"
 import { useStorage } from "../../context/storage"
 import { Composer } from "./composer"
-import { busyCounts, busyTab } from "./composer/tabs"
+import { busyCounts, busyLabel, busyTab } from "./composer/tabs"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -235,7 +235,12 @@ export function Session(props: {
       item.delivery === "queue" ? [{ id: item.id, text: item.payload.text, payload: item.payload }] : [],
     ),
   )
-  const openingTab = () => busyTab(busyCounts({ data, sessionID: route.sessionID, location: location() }))
+  const busy = createMemo(() => busyCounts({ data, sessionID: route.sessionID, location: location() }))
+  const openingTab = () => busyTab(busy())
+  const keymap = Keymap.use()
+  const childShortcut = Keymap.useShortcut("session.child.first")
+  const busyText = createMemo(() => busyLabel(busy()))
+  const [busyHovered, setBusyHovered] = createSignal(false)
   const [composer, setComposer] = createStore({
     open: false,
     tab: undefined as string | undefined,
@@ -1596,25 +1601,51 @@ export function Session(props: {
                 </Show>
               </scrollbox>
             </box>
-            <box height={1} flexShrink={0} flexDirection="row" justifyContent="flex-end">
-              <Show when={firstJump()}>
-                <text fg={theme.text.feedback.info.base}>Loading session history…</text>
-              </Show>
-              <Show when={!firstJump() && awayFromBottom()}>
-                <box
-                  id="session-jump-to-latest"
-                  paddingLeft={1}
-                  onMouseOver={() => setLatestHovered(true)}
-                  onMouseOut={() => setLatestHovered(false)}
-                  onMouseUp={toBottom}
-                >
-                  <text
-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
+            <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
+              <box flexShrink={1} minWidth={0} justifyContent="flex-start">
+                <Show when={busyText()}>
+                  <box
+                    flexShrink={1}
+                    minWidth={0}
+                    onMouseOver={() => setBusyHovered(true)}
+                    onMouseOut={() => setBusyHovered(false)}
+                    onMouseUp={() => keymap.dispatch("session.child.first", busyTab(busy()))}
                   >
-                    Jump to latest ↓
-                  </text>
-                </box>
-              </Show>
+                    <text
+                      fg={busyHovered() ? theme.text.base : theme.text.muted}
+                      wrapMode="none"
+                      truncate
+                      flexShrink={1}
+                      minWidth={0}
+                    >
+                      <Show when={childShortcut()}>
+                        {(value) => <span style={{ fg: theme.text.base }}>{value()} </span>}
+                      </Show>
+                      {busyText()}
+                    </text>
+                  </box>
+                </Show>
+              </box>
+              <box flexShrink={0} justifyContent="flex-end">
+                <Show when={firstJump()}>
+                  <text fg={theme.text.feedback.info.base}>Loading session history…</text>
+                </Show>
+                <Show when={!firstJump() && awayFromBottom()}>
+                  <box
+                    id="session-jump-to-latest"
+                    paddingLeft={1}
+                    onMouseOver={() => setLatestHovered(true)}
+                    onMouseOut={() => setLatestHovered(false)}
+                    onMouseUp={toBottom}
+                  >
+                    <text
+                      fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
+                    >
+                      Jump to latest ↓
+                    </text>
+                  </box>
+                </Show>
+              </box>
             </box>
             <box flexShrink={0}>
               <Show when={!composer.open && !disabled() && queuedPrompts().length > 0}>
