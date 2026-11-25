@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import { addDefaultParsers, type TextRenderable } from "@opentui/core"
+import { addDefaultParsers, DiffRenderable, type Renderable, type TextRenderable } from "@opentui/core"
+import { PatchDiff } from "../../../src/component/patch-diff"
 import parsers from "../../../src/parsers-config"
 import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 import { ConfigProvider } from "../../../src/config"
@@ -350,3 +351,116 @@ function mount(input: {
     { width: 40, height: 24 },
   )
 }
+
+const editPatch = ["--- a/file.ts", "+++ b/file.ts", "@@ -1 +1 @@", "-old", "+added"].join("\n")
+
+function editMessage(id: string): SessionMessageAssistant {
+  return {
+    id,
+    type: "assistant",
+    agent: "build",
+    model: { providerID: "fixture", id: "fixture" },
+    time: { created: 0, completed: 1 },
+    content: [
+      {
+        type: "tool",
+        id: `edit-${id}`,
+        name: "edit",
+        time: { created: 0, completed: 1 },
+        state: {
+          status: "completed",
+          input: { path: `${id}.ts` },
+          content: [],
+          metadata: { files: [{ additions: 2, deletions: 1 }] },
+        },
+      },
+    ],
+  }
+}
+
+function editEntry(id: string): SessionEntry {
+  return { type: "entry", size: 1, entry: { type: "part", ref: { messageID: id, partID: `edit-${id}` } } }
+}
+
+function editRow(ids: string[]): SessionGroup {
+  return {
+    type: "group",
+    kind: "medium-edits",
+    size: ids.length,
+    completed: true,
+    pending: [],
+    children: ids.map(editEntry),
+  }
+}
+
+function findDiffs(root: Renderable): DiffRenderable[] {
+  return root instanceof DiffRenderable ? [root] : root.getChildren().flatMap(findDiffs)
+}
+
+function mountEdits(
+  row: SessionGroup,
+  expanded: Record<string, boolean | undefined>,
+  setExpanded: (id: string, value: boolean) => void,
+) {
+  const anchors = createTimelineAnchors()
+  const config = createTuiResolvedConfig({ animations: false })
+  return mount({
+    row,
+    anchors,
+    config,
+    expanded: (id) => expanded[id] ?? false,
+    setExpanded,
+    message: (id) => editMessage(id),
+    entry: (entry) =>
+      entry.type === "part" ? (
+        <PatchDiff
+          diff={editPatch}
+          hunkFg="#ffffff"
+          lineNumberBg="#000000"
+          fg="#ffffff"
+          addedBg="#000000"
+          removedBg="#000000"
+          contextBg="#000000"
+          addedSignColor="#00ff00"
+          removedSignColor="#ff0000"
+          lineNumberFg="#888888"
+          addedLineNumberBg="#003300"
+          removedLineNumberBg="#330000"
+        />
+      ) : (
+        <text>unexpected entry</text>
+      ),
+  })
+}
+
+test("a singleton medium edit mounts its PatchDiff directly", async () => {
+  addDefaultParsers(parsers.parsers)
+  const app = await mountEdits(editRow(["m-1"]), {}, () => {})
+  try {
+    app.renderer.start()
+    await app.waitForFrame((frame) => frame.includes("added"))
+    expect(findDiffs(app.renderer.root)).toHaveLength(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a repeated medium edit group hides every diff until expansion", async () => {
+  addDefaultParsers(parsers.parsers)
+  const row = editRow(["m-1", "m-2", "m-3"])
+  const [expanded, setExpanded] = createStore<Record<string, boolean>>({})
+  const app = await mountEdits(row, expanded, setExpanded)
+  const id = groupID(row, 0)
+  if (!id) throw new Error("Missing group ID")
+  try {
+    app.renderer.start()
+    await app.waitForFrame((frame) => frame.includes("Edited 3 files"))
+    expect(findDiffs(app.renderer.root)).toHaveLength(0)
+    setExpanded(id, true)
+    await app.waitForFrame((frame) => findDiffs(app.renderer.root).length === 3)
+    expect(findDiffs(app.renderer.root)).toHaveLength(3)
+    expect(app.captureCharFrame()).toContain("Edited 3 files")
+  } finally {
+    app.renderer.destroy()
+  }
+})
