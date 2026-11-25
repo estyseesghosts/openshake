@@ -16,7 +16,6 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
       "@opencode/latex/*": ["./vendor/latex/src/*"],
       "@opencode/merman/*": ["./vendor/merman/src/*"]

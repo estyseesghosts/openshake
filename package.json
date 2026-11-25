@@ -9,14 +9,15 @@
     "start": "bun run src/main.tsx",
     "format": "bun fmt --no-script",
     "format:check": "bun fmt --no-script --check",
-    "lint": "bun lint --no-script --type-aware --max-warnings 0",
+    "lint:check": "oxlint --max-warnings 0 src scripts",
     "typecheck": "bun check",
     "typecheck:tsc": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test",
-    "verify": "bun run format:check && bun run lint && bun run typecheck && bun run test",
+    "test": "bun test src/backend.test.ts",
+    "verify": "bun run format:check && bun run lint:check && bun run typecheck && bun run test",
     "vendor:sync": "bun run scripts/vendor-sync.ts"
   },
   "dependencies": {
+    "@effect/platform-node": "4.1.0",
     "@opencode/client": "2.4.1",
     "@opencode/core": "2.4.1",
     "@opencode/plugin": "2.4.1",
@@ -42,6 +43,7 @@
     "@tsconfig/bun": "1.0.9",
     "@types/bun": "1.4.3",
     "@typescript/native": "npm:typescript@7.1.0-beta",
+    "oxlint": "1.93.0",
     "typescript": "npm:@typescript/typescript6@6.0.2"
   },
   "overrides": {

@@ -37,7 +37,7 @@ The vendored TUI source and every `@opencode/*` package plus the server **must**
 bun run vendor:sync v2.4.2
 ```
 
-The script splits `packages/tui`, `packages/latex`, and `packages/merman` out of the upstream repo, then runs `git subtree pull` for each. It defaults to the sibling `../opencode` checkout; set `OPENCODE_UPSTREAM` to use another path or URL. After syncing, bump the pinned version in `package.json` and `UPSTREAM_VERSION` in `src/backend.ts`, re-run `bun install`, and commit the result. Resolve any vendor conflicts in the `vendor/` directories only; keep first-party changes in `src/`.
+The script archives `packages/tui`, `packages/latex`, and `packages/merman` from the upstream ref, commits that snapshot on the `vendor-source` branch, then applies it with `git subtree merge --prefix=vendor`. It defaults to the sibling `../opencode` checkout; set `OPENCODE_UPSTREAM` to use another path. This avoids splitting tens of thousands of upstream commits just to move a snapshot. After syncing, bump the pinned version in `package.json` and `UPSTREAM_VERSION` in `src/backend.ts`, re-run `bun install`, and commit the result. Resolve any vendor conflicts in `vendor/` only; keep first-party changes in `src/`.
 
 ## Layout
 
@@ -58,4 +58,4 @@ scripts/        vendor sync helper
 bun run verify
 ```
 
-Vendored code is excluded from formatting and linting; it is checked with the upstream TypeScript settings, while first-party code follows `AGENTS.md` and `../typescript-style-guide.md`.
+Vendored code is excluded from formatting and linting; it is checked with the upstream TypeScript settings, while first-party code follows `AGENTS.md` and `../typescript-style-guide.md`. `lint:check` uses `oxlint` because Bun 1.4.4's `bun lint` delegates to a package script and cannot be used as a built-in. The test script explicitly lists first-party test files; upstream's vendored tests require their own preload and are not part of this gate.

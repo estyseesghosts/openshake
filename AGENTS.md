@@ -14,9 +14,13 @@ The vendored TUI and every `@opencode/*` dependency plus the server must share o
 
 ## Backends
 
-- Remote mode is opt-in via `--server` or `OPEN_SHAKE_SERVER`; local mode uses `@opencode/client/promise/service` discovery/ensure and must keep `server.local` accurate.
+- Remote mode is opt-in via `--server` or `OPEN_SHAKE_SERVER`; local mode uses `@opencode/client/service` discovery/ensure and must keep `server.local` accurate.
 - Validate URLs and config files at their boundary. Never print credentials in errors or logs.
+
+## Toolchain deviations
+
+Bun 1.4.4 has no working built-in `bun lint` (it delegates to a package script named `lint` and recurses), so `lint:check` uses `oxlint`, the same linter upstream uses. The vendored two private renderers are bound with a small `Bun.plugin` alias plugin because Bun ignores this project's tsconfig `paths` under a nested package boundary.
 
 ## Checks
 
-Run `bun run verify` before reporting completion. Tests must not require a live server or network.
+Run `bun run verify` before reporting completion. The `test` script names first-party test files explicitly; `vendor/` contains upstream tests that require upstream's own preload and are not part of this project's gate. Tests must not require a live server or network.
