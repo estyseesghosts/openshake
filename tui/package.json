@@ -8,7 +8,8 @@
   "scripts": {
     "test": "bun test --timeout 30000 --only-failures",
     "typecheck": "bun check --no-script -b",
-    "typecheck:tsc": "tsc -b"
+    "typecheck:tsc": "tsc -b",
+    "bench:load": "bun run scripts/load-benchmark.ts"
   },
   "exports": {
     ".": "./src/index.tsx",
