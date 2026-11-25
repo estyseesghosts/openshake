@@ -57,6 +57,23 @@ test("the benchmark coalesces events and keeps row mutations bounded", async () 
   expect(report.diffChunks).toBeGreaterThan(0)
 })
 
+test("the benchmark exercises real createData handling, retention and rendered diffs", async () => {
+  const report = await runLoadBenchmark(scale)
+  // Real event handling and row projection, not just direct unit calls.
+  expect(report.realPath.messages).toBeGreaterThan(0)
+  expect(report.realPath.rows).toBeGreaterThan(0)
+  expect(report.realPath.resident).toBeGreaterThan(0)
+  // Hidden tabs: leaving sessions evicts their transcripts, returning reloads one.
+  expect(report.realPath.evicted).toBeGreaterThan(0)
+  expect(report.realPath.reloaded).toBeGreaterThan(0)
+  // The giant diff is actually mounted through PatchDiff, not merely partitioned.
+  expect(report.diffRender.chunks).toBeGreaterThan(0)
+  expect(report.diffRender.mounted).toBeGreaterThan(0)
+  expect(report.diffRender.diffNodes).toBeGreaterThan(0)
+  // Wall-clock frames stay opt-in and out of ordinary CI assertions.
+  expect(report.frameTimings).toBeUndefined()
+})
+
 test("resident transcript and media bytes stay under configured ceilings", async () => {
   const report = await runLoadBenchmark(scale)
   expect(report.residentTranscriptBytes).toBeLessThan(defaultWindowBudgets.tailBytes)
