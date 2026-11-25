@@ -66,6 +66,13 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+/** A Code Mode call can end in failure while its own tool state stays completed. */
+export function mediumExecuteFailed(part: SessionMessageAssistantTool) {
+  if (canonicalToolName(part.name.toLowerCase()) !== "execute") return false
+  const metadata = record(record(part.state)?.metadata)
+  return executeCalls(metadata?.toolCalls).some((call) => call.status === "error")
+}
+
 /** Reuse the addition/deletion counts OpenCode already parsed rather than reparsing patches. */
 export function mediumEditCounts(part: SessionMessageAssistantTool) {
   const metadata =
