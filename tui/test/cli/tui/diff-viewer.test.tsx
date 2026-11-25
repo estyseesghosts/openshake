@@ -2508,3 +2508,32 @@ test.each([100, 160])("the sidebar source picker switches VCS sources at %i colu
     viewer.app.renderer.destroy()
   }
 })
+
+test("a pathological 25k-line generated diff stays virtualized while scrolling to the end", async () => {
+  const lines = Array.from({ length: 25_000 }, (_, index) => `+line-${String(index).padStart(5, "0")} ${"x".repeat(index % 97)}`)
+  const viewer = await renderDiffViewer(
+    [
+      {
+        file: "generated.txt",
+        status: "added",
+        additions: lines.length,
+        deletions: 0,
+        patch: `--- /dev/null\n+++ b/generated.txt\n@@ -0,0 +1,${lines.length} @@\n${lines.join("\n")}`,
+      },
+    ],
+    { width: 120, height: 24 },
+  )
+  try {
+    expect(viewer.app.captureCharFrame()).toContain("line-00000")
+    expect(findDiffs(viewer.app.renderer.root).reduce((total, node) => total + node.diff.split("\n").length, 0)).toBeLessThan(2000)
+    viewer.commands.get("diff.last")!.run()
+    await viewer.app.flush()
+    if (!viewer.app.captureCharFrame().includes("line-24999")) {
+      await viewer.app.waitForFrame((frame) => frame.includes("line-24999"))
+    }
+    expect(viewer.app.captureCharFrame()).toContain("line-24999")
+    expect(findDiffs(viewer.app.renderer.root).reduce((total, node) => total + node.diff.split("\n").length, 0)).toBeLessThan(2000)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
