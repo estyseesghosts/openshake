@@ -16,7 +16,8 @@
     "lint:check": "oxlint --max-warnings 0 src scripts",
     "typecheck": "bun check",
     "typecheck:tsc": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test src/backend.test.ts",
+    "test": "bun test src/backend.test.ts && bun run test:regression",
+    "test:regression": "bun test --cwd vendor/tui test/context/message-window.test.ts test/context/message-window-residency.test.ts test/context/stream-coalescer.test.ts test/cli/tui/load-fixtures.test.ts test/cli/tui/diff-highlight.test.ts test/cli/tui/diff-split.test.ts test/cli/tui/diff-virtual.test.tsx test/cli/tui/session-verbosity.test.ts test/cli/tui/medium-activity-summary-hardening.test.ts test/cli/tui/home-shell-ui.test.tsx test/cli/tui/group-view.test.tsx",
     "verify": "bun run format:check && bun run lint:check && bun run typecheck && bun run test",
     "vendor:sync": "bun run scripts/vendor-sync.ts"
   },

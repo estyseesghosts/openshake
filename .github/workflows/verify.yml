@@ -1,0 +1,18 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      # Deterministic transcript/coalescing/diff/UI regressions run in normal CI.
+      # Wall-clock load measurements stay opt-in via `bun run bench:load`.
+      - run: bun run verify
