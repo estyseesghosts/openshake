@@ -48,16 +48,30 @@ async function main() {
       ),
     )
 
+  // The TUI owns the terminal. Writing log lines during a frame paints over the
+  // renderer, so buffer them and emit after shutdown; routine debug/info output is
+  // opt-in. Warnings and errors are always preserved.
+  const pendingLogs: string[] = []
+  const verbose = process.env.OPEN_SHAKE_DEBUG === "1"
+  const record = (level: string, message: string) => {
+    if ((level === "debug" || level === "info") && !verbose) return
+    pendingLogs.push(`[shake] ${level}: ${message}`)
+  }
+
   const tui = run({
     app: { name: "openshake", version: "0.1.0", channel: options.channel },
     server: { endpoint: backend.endpoint, local: backend.local },
     args: {},
     config: createConfigService(),
     packages: { prepare },
-    log: (level, message) => process.stderr.write(`[shake] ${level}: ${message}\n`),
+    log: record,
   })
 
-  await Effect.runPromise(Effect.provide(Effect.provide(tui, layer), NodeServices.layer))
+  try {
+    await Effect.runPromise(Effect.provide(Effect.provide(tui, layer), NodeServices.layer))
+  } finally {
+    if (pendingLogs.length) process.stderr.write(`${pendingLogs.join("\n")}\n`)
+  }
 }
 
 main().catch((error: unknown) => {
