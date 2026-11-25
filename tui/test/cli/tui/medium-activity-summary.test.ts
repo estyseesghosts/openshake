@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import type { SessionMessageAssistantTool } from "@opencode/client"
 import {
   mediumActivitySummary,
+  mediumEditFileCount,
   mediumEditsSummary,
   mediumLiveLine,
 } from "../../../src/routes/session/medium-activity-summary"
@@ -43,6 +44,30 @@ test("medium edit summary carries parsed additions and deletions", () => {
     "Edited 4 files · +31 −12",
   )
   expect(mediumEditsSummary([{ name: "apply_patch" }])).toBe("Edited 1 file")
+})
+
+test("one apply_patch call counts every file it changed, not one tool call", () => {
+  const patch = {
+    ...completed("apply_patch"),
+    state: {
+      status: "completed",
+      input: {},
+      content: [],
+      metadata: {
+        files: [
+          { path: "a.ts", additions: 2 },
+          { path: "b.ts", additions: 3 },
+          { path: "c.ts", deletions: 1 },
+        ],
+      },
+    },
+  } as SessionMessageAssistantTool
+  expect(mediumEditFileCount(patch)).toBe(3)
+  expect(mediumEditFileCount(completed("edit"))).toBe(1)
+  expect(mediumEditsSummary([{ name: "apply_patch", files: mediumEditFileCount(patch) }], 5, 1)).toBe(
+    "Edited 3 files · +5 −1",
+  )
+  expect(mediumEditsSummary([{ name: "apply_patch", files: 3 }, { name: "edit" }])).toBe("Edited 4 files")
 })
 
 test("medium live line shows the running child's identity, not its output", () => {

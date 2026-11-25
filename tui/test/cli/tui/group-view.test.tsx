@@ -5,7 +5,7 @@ import { createStore, reconcile } from "solid-js/store"
 import { addDefaultParsers, DiffRenderable, type Renderable, type TextRenderable } from "@opentui/core"
 import { PatchDiff } from "../../../src/component/patch-diff"
 import parsers from "../../../src/parsers-config"
-import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
+import type { SessionMessageAssistant, SessionMessageAssistantTool, SessionMessageInfo } from "@opencode/client"
 import { ConfigProvider } from "../../../src/config"
 import { ThemeProvider } from "../../../src/context/theme"
 import { SessionGroupView } from "../../../src/routes/session/group-view"
@@ -464,3 +464,109 @@ test("a repeated medium edit group hides every diff until expansion", async () =
     app.renderer.destroy()
   }
 })
+
+test("medium group headers render semantic activity and multi-file edit summaries", async () => {
+  addDefaultParsers(parsers.parsers)
+  const activityMessage = assistantWith([
+    toolFixture("r1", "read"),
+    toolFixture("r2", "read"),
+    toolFixture("g1", "grep"),
+    toolFixture("s1", "shell"),
+    toolFixture("s2", "bash"),
+  ])
+  const activityRow: SessionGroup = {
+    type: "group",
+    kind: "medium-activity",
+    size: 5,
+    completed: true,
+    pending: [],
+    children: ["r1", "r2", "g1", "s1", "s2"].map(editEntry),
+  }
+  const activityApp = await mount({
+    row: activityRow,
+    anchors: createTimelineAnchors(),
+    config: createTuiResolvedConfig({ animations: false }),
+    expanded: () => false,
+    setExpanded: () => {},
+    message: () => activityMessage,
+    entry: () => <text>child</text>,
+  })
+  try {
+    activityApp.renderer.start()
+    await activityApp.waitForFrame((frame) => frame.includes("Read 2 files"))
+    expect(activityApp.captureCharFrame()).toContain("Read 2 files, searched")
+  } finally {
+    activityApp.renderer.destroy()
+  }
+
+  const patchMessage: SessionMessageAssistant = {
+    ...editMessage("p-1"),
+    content: [
+      {
+        type: "tool",
+        id: "edit-p-1",
+        name: "apply_patch",
+        time: { created: 0, completed: 1 },
+        state: {
+          status: "completed",
+          input: {},
+          content: [],
+          metadata: {
+            files: [
+              { path: "a.ts", additions: 2 },
+              { path: "b.ts", additions: 3 },
+              { path: "c.ts", deletions: 1 },
+            ],
+          },
+        },
+      },
+    ],
+  }
+  const editRowWithPatch: SessionGroup = editRow(["p-1", "m-2"])
+  const patchApp = await mount({
+    row: editRowWithPatch,
+    anchors: createTimelineAnchors(),
+    config: createTuiResolvedConfig({ animations: false }),
+    expanded: () => false,
+    setExpanded: () => {},
+    message: (id) => (id === "p-1" ? patchMessage : editMessage(id)),
+    entry: (entry) =>
+      entry.type === "part" ? (
+        <PatchDiff
+          diff={editPatch}
+          hunkFg="#ffffff"
+          lineNumberBg="#000000"
+        />
+      ) : (
+        <text>unexpected entry</text>
+      ),
+  })
+  try {
+    patchApp.renderer.start()
+    await patchApp.waitForFrame((frame) => frame.includes("Edited 4 files"))
+    expect(patchApp.captureCharFrame()).toContain("Edited 4 files · +7 −2")
+  } finally {
+    patchApp.renderer.destroy()
+  }
+})
+
+function toolFixture(id: string, name: string): SessionMessageAssistantTool {
+  return {
+    type: "tool",
+    id: `edit-${id}`,
+    name,
+    time: { created: 0, completed: 1 },
+    state: { status: "completed", input: {}, content: [], metadata: {} },
+  }
+}
+
+function assistantWith(content: SessionMessageAssistantTool[]): SessionMessageAssistant {
+  return {
+    id: "activity",
+    type: "assistant",
+    agent: "build",
+    model: { providerID: "fixture", id: "fixture" },
+    time: { created: 0, completed: 1 },
+    content,
+  }
+}
