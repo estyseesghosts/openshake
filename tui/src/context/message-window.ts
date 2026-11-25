@@ -26,7 +26,7 @@ export function messageBytes(message: SessionMessageInfo) {
   if (message.type === "assistant") {
     for (const part of message.content) {
       if ("text" in part && typeof part.text === "string") bytes += part.text.length * 2
-      if (part.type === "tool" && part.state.status !== "streaming") {
+      if (part.type === "tool" && part.state.status !== "streaming" && part.state.status !== "running") {
         for (const item of part.state.content ?? []) {
           if ("text" in item && typeof item.text === "string") bytes += item.text.length * 2
         }
